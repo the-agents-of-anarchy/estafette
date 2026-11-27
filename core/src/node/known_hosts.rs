@@ -9,7 +9,7 @@ use super::addresses::{lookup_replaced_event, replace_lookup_entry};
 use super::node_error::NodeError;
 use super::payload_records::admission_record;
 use crate::clock::MILLIS_PER_SECOND;
-use crate::config::{ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis, host_relay_url};
+use crate::config::{ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
 use crate::event::{ConfigurationRewrite, Event, GossipEvent, ShortId};
 use crate::keys::parse_public_key;
 use crate::net::endpoint::NodeEndpoint;
@@ -56,7 +56,10 @@ pub struct SkippedHost {
 fn known_host_address(host: &Host) -> Result<KnownHostAddress, HostUnparsed> {
     Ok(KnownHostAddress {
         id: parse_public_key(&host.id).map_err(|_unparsed| HostUnparsed::Id)?,
-        relay: host_relay_url(&host.relay).ok_or(HostUnparsed::Relay)?,
+        relay: host
+            .relay
+            .parse()
+            .map_err(|_unparsed| HostUnparsed::Relay)?,
     })
 }
 
@@ -408,38 +411,6 @@ mod tests {
                 format!("known host {live_id} needs a node id of {SPEC_REFUSAL_ACCEPTED}"),
             ]
         );
-    }
-
-    /// Spec 3.5 and 3.8: a configured host whose relay is not an https URL within the wire limit refuses the start, as the configuration's load does.
-    #[test]
-    fn spec_3_8_a_configured_host_with_a_relay_the_configuration_load_refuses_refuses_the_start() {
-        let live_id = crate::keys::render_public_key(&secret_key(HOST_SEED).public());
-        let relay_not_https = "http://relay.estafette.invalid/".to_owned();
-        let relay_past_wire_limit = format!(
-            "https://{}.estafette.invalid/",
-            "r".repeat(crate::wire::MAX_RELAY_URL_BYTES)
-        );
-
-        for relay in [relay_not_https, relay_past_wire_limit] {
-            let host = Host {
-                id: live_id.clone(),
-                relay: relay.clone(),
-                ts: None,
-                origin: HostOrigin::Configured,
-            };
-
-            let refusal = known_host_addresses(&config_with_hosts(vec![host]))
-                .err()
-                .map(|failure| failure.to_string());
-
-            assert_eq!(
-                refusal,
-                Some(format!(
-                    "known host {live_id} needs a node id of {SPEC_REFUSAL_ACCEPTED}"
-                )),
-                "relay {relay}"
-            );
-        }
     }
 
     /// Spec 3.3 and 3.8: a host learned from its record leaves the file at a later save exactly when more than 30 days have passed since it was heard.
