@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use clap::Subcommand;
 use iroh::PublicKey;
 
-use crate::config::{AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig};
+use crate::config::{
+    AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, OWNER_FIELD, SECRET_FIELD,
+};
 use crate::crypto::{
     HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, render_host_certificate, sign_host_certificate,
 };
@@ -504,8 +506,8 @@ fn invitation_of(
             network: network.as_str().to_owned(),
         });
     }
-    let secret = parse_network_secret(&config.secret).map_err(stored_key("secret"))?;
-    let owner = parse_public_key(&config.owner).map_err(stored_key("owner"))?;
+    let secret = parse_network_secret(&config.secret).map_err(stored_key(SECRET_FIELD))?;
+    let owner = parse_public_key(&config.owner).map_err(stored_key(OWNER_FIELD))?;
     let hosts = config
         .hosts
         .iter()

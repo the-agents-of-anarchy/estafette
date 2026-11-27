@@ -12,6 +12,8 @@ use crate::keys::HEX_CHARS_PER_KEY;
 use crate::wire::{self, MAX_RELAY_URL_BYTES};
 
 const HIDDEN_SECRET_DEBUG_TEXT: &str = "..";
+pub(crate) const SECRET_FIELD: &str = "secret";
+pub(crate) const OWNER_FIELD: &str = "owner";
 
 pub(crate) const MILLIS_PER_SECOND: u64 = 1000;
 const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * MILLIS_PER_SECOND;
@@ -399,8 +401,8 @@ impl NetworkConfig {
     }
 
     fn validate(&self, path: &Path) -> Result<(), ConfigError> {
-        require_hex_key(path, "secret", &self.secret)?;
-        require_hex_key(path, "owner", &self.owner)?;
+        require_hex_key(path, SECRET_FIELD, &self.secret)?;
+        require_hex_key(path, OWNER_FIELD, &self.owner)?;
         for (index_in_hosts, host) in self.hosts.iter().enumerate() {
             host.validate(index_in_hosts, path)?;
         }
