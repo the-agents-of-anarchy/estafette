@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Write};
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -161,16 +162,16 @@ pub enum TraceStop {
     Drained,
     /// The writer of the file named did not report within the drain bound that it took every queued line.
     NotDrained { file: TraceFileKind },
-    /// The writer of the file named took every queued line, but the file was sized past its last line and could not be cut back to it, so zero bytes follow that line, and `unreported` lines lost or unwritten are counted in no `dropped` line, none when it is 0.
+    /// The writer of the file named took every queued line, but the file was sized past its last line and could not be cut back to it, so zero bytes follow that line, `unreported` being the count of lines lost or unwritten that no `dropped` line of the file counts, none when every one was counted and always none for a flush, which counts nothing.
     NotCut {
         file: TraceFileKind,
         source: io::Error,
-        unreported: u64,
+        unreported: Option<NonZeroU64>,
     },
     /// The writer of the file named took every queued line and cut the file back, but the last `dropped` line, carrying the count of lines lost or unwritten, could not be written, so the file does not say that count.
     NotReported {
         file: TraceFileKind,
-        unreported: u64,
+        unreported: NonZeroU64,
     },
 }
 

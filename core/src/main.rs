@@ -364,8 +364,8 @@ fn report_unfinished_trace_stops(
                 unreported,
             } => std::iter::once(ProcessEvent::TraceNotCut { file, source })
                 .chain(
-                    (unreported > 0)
-                        .then_some(ProcessEvent::TraceLossUnreported { file, unreported }),
+                    unreported
+                        .map(|unreported| ProcessEvent::TraceLossUnreported { file, unreported }),
                 )
                 .collect(),
             TraceStop::NotReported { file, unreported } => {

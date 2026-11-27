@@ -1,4 +1,5 @@
 use std::io;
+use std::num::NonZeroU64;
 use std::panic::Location;
 use std::time::Duration;
 
@@ -78,7 +79,7 @@ pub enum ProcessEvent {
     /// The debug trace's file named could not write at the stop the `dropped` line carrying the count of lines it lost or could not write.
     TraceLossUnreported {
         file: TraceFileKind,
-        unreported: u64,
+        unreported: NonZeroU64,
     },
     /// The process started the command of that name, which starts an endpoint.
     Started { command: &'static str },

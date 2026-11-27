@@ -10,6 +10,7 @@ mod stuck_files;
 mod observability {
     use std::ffi::OsString;
     use std::io::{self, Write};
+    use std::num::NonZeroU64;
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::mpsc;
@@ -52,7 +53,7 @@ mod observability {
         }
     }
 
-    const LINES_THE_FILE_REFUSES: u64 = 3;
+    const LINES_THE_FILE_REFUSES: NonZeroU64 = NonZeroU64::MIN.saturating_add(2);
     const SHORT_DRAIN: Duration = Duration::from_millis(20);
 
     /// A trace file that refuses every write and refuses to be cut back below the length it was sized to.
@@ -139,12 +140,12 @@ mod observability {
             TraceStop::NotCut {
                 file: TraceFileKind::Events,
                 source: first_source,
-                unreported: 0,
+                unreported: None,
             },
             TraceStop::NotCut {
                 file: TraceFileKind::Events,
                 source: second_source,
-                unreported: 0,
+                unreported: None,
             },
         ) = (&first, &second)
         else {
@@ -164,7 +165,7 @@ mod observability {
             TraceBounds::SPEC,
         );
         let events = run.open_events().unwrap();
-        for _ in 0..LINES_THE_FILE_REFUSES {
+        for _ in 0..LINES_THE_FILE_REFUSES.get() {
             events.write(ONE_EVENT, &[]);
         }
 
@@ -226,7 +227,7 @@ mod observability {
             TraceBounds::SPEC,
         );
         let events = run.open_events().unwrap();
-        for _ in 0..LINES_THE_FILE_REFUSES {
+        for _ in 0..LINES_THE_FILE_REFUSES.get() {
             events.write(ONE_EVENT, &[]);
         }
 
@@ -261,7 +262,7 @@ mod observability {
             TraceBounds::SPEC,
         );
         let events = run.open_events().unwrap();
-        for _ in 0..LINES_THE_FILE_REFUSES {
+        for _ in 0..LINES_THE_FILE_REFUSES.get() {
             events.write(ONE_EVENT, &[]);
         }
 
@@ -272,7 +273,7 @@ mod observability {
             let TraceStop::NotCut {
                 file: TraceFileKind::Events,
                 source,
-                unreported: LINES_THE_FILE_REFUSES,
+                unreported: Some(LINES_THE_FILE_REFUSES),
             } = stop
             else {
                 panic!("{first:?} then {second:?}");

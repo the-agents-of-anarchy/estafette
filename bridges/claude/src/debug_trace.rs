@@ -90,7 +90,7 @@ impl DebugTrace {
                 source,
                 unreported,
             } => std::iter::once(BridgeEvent::TraceNotCut(source))
-                .chain((unreported > 0).then_some(BridgeEvent::TraceLossUnreported { unreported }))
+                .chain(unreported.map(|unreported| BridgeEvent::TraceLossUnreported { unreported }))
                 .collect(),
             TraceStop::NotReported {
                 file: _,

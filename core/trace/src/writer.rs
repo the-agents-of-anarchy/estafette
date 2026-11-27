@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::io::{self, Write};
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
@@ -298,7 +299,7 @@ enum Finish {
 
 /// How the writer thread ended: the lines it could not report in a `dropped` line, and whether it cut the file back to its last line.
 struct WriterEnd {
-    unreported: u64,
+    unreported: Option<NonZeroU64>,
     cut: io::Result<()>,
 }
 
@@ -417,11 +418,10 @@ impl FileTrace {
                 progress.is_waiting()
             })
             .unwrap_or_else(PoisonError::into_inner);
-        self.stop_ended(
-            progress
-                .answer()
-                .map(|cut| WriterEnd { unreported: 0, cut }),
-        )
+        self.stop_ended(progress.answer().map(|cut| WriterEnd {
+            unreported: None,
+            cut,
+        }))
     }
 
     /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most the drain bound for it to take every line it holds, report that loss and cut the file back to its last line, saying how the stop left this file; a later call answers what the first answered.
@@ -464,14 +464,14 @@ impl FileTrace {
                 unreported,
             },
             Some(WriterEnd {
-                unreported: unreported @ 1..,
+                unreported: Some(unreported),
                 cut: Ok(()),
             }) => TraceStop::NotReported {
                 file: self.kind,
                 unreported,
             },
             Some(WriterEnd {
-                unreported: 0,
+                unreported: None,
                 cut: Ok(()),
             }) => TraceStop::Drained,
             None => TraceStop::NotDrained { file: self.kind },
@@ -501,7 +501,7 @@ fn write_every_line(
     numbering.count_unwritten(*locked(lost_at_close));
     numbering.report_unwritten(&mut output, header);
     WriterEnd {
-        unreported: numbering.unwritten,
+        unreported: NonZeroU64::new(numbering.unwritten),
         cut: output.close(),
     }
 }

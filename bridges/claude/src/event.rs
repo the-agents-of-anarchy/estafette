@@ -1,4 +1,5 @@
 use std::io;
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use estafette_bridge_claude::discover::{BinarySocket, Pid};
@@ -113,7 +114,7 @@ pub enum BridgeEvent {
     /// The events file could not be cut back to its last line at the stop.
     TraceNotCut(io::Error),
     /// The events file could not take at the stop the `dropped` line carrying the count of lines it lost or could not write.
-    TraceLossUnreported { unreported: u64 },
+    TraceLossUnreported { unreported: NonZeroU64 },
     /// The inbox socket took the bridge's connection.
     InboxConnected { binary_pid: Pid },
     /// The inbox socket closed the bridge's connection, which the bridge opens again.
