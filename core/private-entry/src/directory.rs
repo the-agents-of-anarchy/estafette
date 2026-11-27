@@ -30,7 +30,7 @@ impl fmt::Display for DirectoryFinding {
 
 /// Says what stops the entry from being a directory of the user that grants nothing to group or other, none when nothing does.
 #[must_use]
-pub const fn directory_finding(facts: EntryFacts, user_id: u32) -> Option<DirectoryFinding> {
+const fn directory_finding(facts: EntryFacts, user_id: u32) -> Option<DirectoryFinding> {
     match facts.kind {
         EntryKind::SymbolicLink => Some(DirectoryFinding::Untrusted(UntrustedEntry::SymbolicLink)),
         EntryKind::RegularFile | EntryKind::Other => Some(DirectoryFinding::NotADirectory),
