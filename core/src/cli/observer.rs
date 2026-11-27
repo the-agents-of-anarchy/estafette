@@ -2785,18 +2785,25 @@ mod tests {
         receive.read_to_end(wire::WIRE_LIMIT_BYTES).await.unwrap()
     }
 
-    /// Whether the connection carries the request and returns an answer, a closed connection answering nothing.
+    /// Whether the connection carries the request and returns an answer, a closed connection answering nothing, failing by name when the connection neither answers nor fails within the payload wait.
     async fn probe_answered_on(
         connection: &iroh::endpoint::Connection,
         request: wire::Request,
     ) -> bool {
         let sealed = crate::payload::seal_request(&network_keys(), request).unwrap();
-        let Ok((mut send, mut receive)) = connection.open_bi().await else {
-            return false;
-        };
-        send.write_all(&sealed).await.is_ok()
-            && send.finish().is_ok()
-            && receive.read_to_end(wire::WIRE_LIMIT_BYTES).await.is_ok()
+        answered_within(
+            PAYLOAD_WAIT,
+            "answer or failure of the probe on the live direct connection",
+            async {
+                let Ok((mut send, mut receive)) = connection.open_bi().await else {
+                    return false;
+                };
+                send.write_all(&sealed).await.is_ok()
+                    && send.finish().is_ok()
+                    && receive.read_to_end(wire::WIRE_LIMIT_BYTES).await.is_ok()
+            },
+        )
+        .await
     }
 
     fn introduce_from_neighbor() -> wire::Request {
@@ -2879,6 +2886,11 @@ mod tests {
 
     /// A Presence of the neighbor carrying the address, newer than any it sent before.
     fn neighbor_presence_announcing(addr: Addr) -> Payload {
+        neighbor_presence_announcing_at(addr, wall_clock_ms())
+    }
+
+    /// A Presence of the neighbor carrying the address and the seq.
+    fn neighbor_presence_announcing_at(addr: Addr, seq: u64) -> Payload {
         Payload::Presence(wire::Presence {
             v: Version::CURRENT,
             card: wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public()),
@@ -2886,7 +2898,7 @@ mod tests {
             public: NEIGHBOR_PUBLIC.to_vec(),
             attached: true,
             addr,
-            seq: wall_clock_ms(),
+            seq,
             mac: ZERO_MAC,
             sig: ZERO_SIGNATURE,
         })
@@ -2977,52 +2989,30 @@ mod tests {
         }
     }
 
-    /// The `last_seen` of the neighbor in the observer's table, none while the table lists no neighbor.
-    fn neighbor_last_seen_by(observer: &ObserverHost) -> Option<u64> {
-        let neighbor = wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public());
-        observer
-            .rows
-            .table()
-            .peers(wall_clock_ms())
-            .find(|peer| peer.card == neighbor)
-            .map(|peer| peer.last_seen)
-    }
-
-    /// Waits until the observer's table holds a `last_seen` of the neighbor strictly later than `earlier`, failing by name when it does not within the payload wait.
-    async fn wait_until_the_observer_takes_a_neighbors_presence_after(
-        observer: &ObserverHost,
-        earlier: Option<u64>,
-    ) {
-        let taken = tokio::time::timeout(PAYLOAD_WAIT, async {
-            while neighbor_last_seen_by(observer) <= earlier {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
-        assert!(
-            taken.is_ok(),
-            "the observer took no presence of the neighbor later than {earlier:?} within {PAYLOAD_WAIT:?}"
-        );
-    }
-
-    /// Has the neighbor broadcast a Presence stamped later than any the observer holds and waits until the observer has taken it.
-    async fn neighbor_announces_itself_and_the_observer_takes_it(
+    /// Has the neighbor broadcast a Presence of that seq and waits until the observer records it as accepted, failing by the event's name when it does not within the payload wait.
+    async fn neighbor_announces_with_seq_and_the_observer_accepts_it(
         neighbor: &SilentNeighbor,
-        observer: &ObserverHost,
+        recorded: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+        seq: u64,
     ) {
-        let last_seen_before = neighbor_last_seen_by(observer);
-        while Some(wall_clock_ms()) <= last_seen_before {
-            tokio::task::yield_now().await;
-        }
         neighbor
             .topic
             .broadcast(
                 &secret_key(NEIGHBOR_SEED),
-                neighbor_presence_announcing(neighbor_address()),
+                neighbor_presence_announcing_at(neighbor_address(), seq),
             )
             .await
             .unwrap();
-        wait_until_the_observer_takes_a_neighbors_presence_after(observer, last_seen_before).await;
+        recorded_until(
+            recorded,
+            PAYLOAD_ACCEPTED,
+            |fields| {
+                field(fields, KIND_FIELD) == Some(&serde_json::Value::from(PRESENCE_EVENT_KIND))
+                    && field(fields, SEQ_FIELD) == Some(&serde_json::Value::from(seq))
+            },
+            PAYLOAD_WAIT,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -3032,21 +3022,23 @@ mod tests {
         let mut neighbor = start_silent_neighbor().await;
         lab.write_network_config(&[NEIGHBOR_SEED]);
         let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
-        let (mut effects, _operator_effects) = lab.effects(
+        let (record, mut recorded) = recorded_events();
+        let (mut effects, _operator_effects) = lab.effects_recording_every_event_to(
             vec![neighbor.address.clone()],
             Box::pin(async move { drop(interrupted.await) }),
+            record,
         );
         let observer_clock = StandingClock::standing_an_hour_ahead();
         effects.monotonic = observer_clock.monotonic();
         let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
         let observation = start_observation(&setup, effects).await.unwrap();
-        let observer_host = Arc::clone(&observation.host);
         let observer_address = observation.endpoint.endpoint().addr();
         let mut tail_output = Vec::new();
 
         let (tail_result, (earlier_closed, live_direct_answered_after_the_close, neighbor_events)) =
             tokio::join!(observation.tail(&mut tail_output), async {
                 observers_presence_request(&mut neighbor.topic).await;
+                let first_seq = wall_clock_ms();
                 let observer = secret_key(OBSERVER_SEED).public();
                 let earlier = GoneProcess::introduced_to(observer_address).await;
                 let live_direct = neighbor
@@ -3067,18 +3059,30 @@ mod tests {
                     )
                     .await;
                 answer_on(&live_direct, probe_from_neighbor()).await;
-                neighbor_announces_itself_and_the_observer_takes_it(&neighbor, &observer_host)
-                    .await;
+                neighbor_announces_with_seq_and_the_observer_accepts_it(
+                    &neighbor,
+                    &mut recorded,
+                    first_seq,
+                )
+                .await;
                 observer_clock.move_forward(
                     SPEC_GONE_PROCESS_SILENCE.saturating_add(HEARING_SAMPLE_INTERVAL),
                 );
-                neighbor_announces_itself_and_the_observer_takes_it(&neighbor, &observer_host)
-                    .await;
+                neighbor_announces_with_seq_and_the_observer_accepts_it(
+                    &neighbor,
+                    &mut recorded,
+                    first_seq.saturating_add(1),
+                )
+                .await;
                 let closed = earlier.connection_end_within(SUPERSEDED_CLOSE_WAIT).await;
                 let live_direct_answered_after_the_close =
                     probe_answered_on(&live_direct, probe_from_neighbor()).await;
-                neighbor_announces_itself_and_the_observer_takes_it(&neighbor, &observer_host)
-                    .await;
+                neighbor_announces_with_seq_and_the_observer_accepts_it(
+                    &neighbor,
+                    &mut recorded,
+                    first_seq.saturating_add(2),
+                )
+                .await;
                 let mut neighbor_events = Vec::new();
                 while let Ok(Some(Ok(event))) =
                     tokio::time::timeout(Duration::ZERO, neighbor.topic.next_event()).await
