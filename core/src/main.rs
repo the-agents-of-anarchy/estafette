@@ -289,7 +289,7 @@ struct ProcessRecord {
     salt: LocationSalt,
 }
 
-/// Runs the named command that starts an endpoint: resolves the directories, starts the trace on the given setup unless `--no-debug`, names its files first on standard error and sets the setup's panic hook on it, records the start, sends iroh's own lines to the trace through the setup's install, runs the command, records how it ended and the exit status, then empties the trace's queues within their bound before the process exits, saying on standard error, file by file, when a queue did not empty or its file could not be cut back to its last line.
+/// Runs the named command that starts an endpoint, traced unless `--no-debug`, and says how the process ends.
 fn run_traced<StandardError: Write + Send + 'static>(
     command_name: &'static str,
     tracing: Tracing,
@@ -313,12 +313,7 @@ fn run_traced<StandardError: Write + Send + 'static>(
         }
     };
     if let Some(trace) = &trace {
-        drop(writeln!(
-            stderr.lock().unwrap_or_else(PoisonError::into_inner),
-            "{}",
-            trace.announcement()
-        ));
-        (setup.record_panics)(Arc::clone(trace), run_record_on(&stderr, None));
+        announce_trace(trace, &stderr, setup.record_panics);
     }
     let process = ProcessRecord {
         record: run_record_on(&stderr, trace.clone()),
@@ -331,21 +326,60 @@ fn run_traced<StandardError: Write + Send + 'static>(
         }
         .into(),
     );
-    let outcome = Directories::establish(environment, &setup.filesystem, cards_directory_override)
+    let outcome = outcome_of_command(
+        environment,
+        cards_directory_override,
+        &setup,
+        &process,
+        command,
+    );
+    let status = exit_status_after(outcome, process.record.as_ref());
+    (process.record)(ProcessEvent::Exited { status }.into());
+    if let Some(trace) = &process.trace {
+        finish_trace(trace, &stderr);
+    }
+    status
+}
+
+/// Names the trace's files first on standard error and sets the panic hook that writes each panic's source location into the trace.
+fn announce_trace<StandardError: Write + Send + 'static>(
+    trace: &Arc<Trace>,
+    stderr: &Arc<Mutex<StandardError>>,
+    record_panics: RecordPanics,
+) {
+    drop(writeln!(
+        stderr.lock().unwrap_or_else(PoisonError::into_inner),
+        "{}",
+        trace.announcement()
+    ));
+    record_panics(Arc::clone(trace), run_record_on(stderr, None));
+}
+
+/// Establishes the directories, sends iroh's own lines to the trace, and runs the command on them.
+fn outcome_of_command(
+    environment: impl Fn(&str) -> Option<OsString>,
+    cards_directory_override: CardsDirectoryOverride,
+    setup: &ProcessSetup<'_>,
+    process: &ProcessRecord,
+    command: impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure>,
+) -> Result<ExitStatus, CommandLineFailure> {
+    Directories::establish(environment, &setup.filesystem, cards_directory_override)
         .map_err(CommandLineFailure::Directories)
         .and_then(|directories| {
             if let Some(trace) = &process.trace {
                 (setup.install_iroh_lines)(Arc::clone(trace))
                     .map_err(CommandLineFailure::IrohLines)?;
             }
-            command(directories, &process)
-        });
-    let status = exit_status_after(outcome, process.record.as_ref());
-    (process.record)(ProcessEvent::Exited { status }.into());
-    if let Some(trace) = &process.trace {
-        report_unfinished_trace_stops(trace.finish(), trace.drain(), &run_record_on(&stderr, None));
-    }
-    status
+            command(directories, process)
+        })
+}
+
+/// Empties the trace's queues within their bound, saying on standard error when a queue did not empty or its file could not be cut back to its last line.
+fn finish_trace<StandardError: Write + Send + 'static>(
+    trace: &Trace,
+    stderr: &Arc<Mutex<StandardError>>,
+) {
+    report_unfinished_trace_stops(trace.finish(), trace.drain(), &run_record_on(stderr, None));
 }
 
 /// Writes through the standard error record each stop that left its trace file unfinished, in the order given, naming the drain bound a writer did not report within.
