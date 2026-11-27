@@ -720,6 +720,7 @@ mod tests {
     const PEER_LIFE_WAIT: Duration = QUIC_KEEP_ALIVE_INTERVAL
         .saturating_mul(KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES * PEER_LIFE_WAIT_MARGIN_FACTOR);
 
+    const SPEC_QUIC_IDLE_TIMEOUT_RENDERED: &str = "max_idle_timeout: Some(10000)";
     const SPEC_QUIC_IDLE_TIMEOUT_EARLIEST: Duration = Duration::from_secs(9);
     const SPEC_QUIC_IDLE_TIMEOUT_LATEST: Duration = Duration::from_secs(11);
     const MEMBER_SEED: u8 = 1;
@@ -1062,6 +1063,16 @@ mod tests {
         assert_eq!(
             dialed.remote_id(),
             SecretKey::from_bytes(&[MEMBER_SEED; KEY_LEN]).public()
+        );
+    }
+
+    #[test]
+    fn spec_3_14_quic_transport_config_sets_the_idle_timeout_to_10000_ms() {
+        let rendered = format!("{:?}", quic_transport_config());
+
+        assert!(
+            rendered.contains(SPEC_QUIC_IDLE_TIMEOUT_RENDERED),
+            "{SPEC_QUIC_IDLE_TIMEOUT_RENDERED} is not in {rendered}"
         );
     }
 
