@@ -90,6 +90,12 @@ impl InboxBuffer {
         let first_newer = self.frames.partition_point(|frame| frame.seq <= since);
         self.frames.range(first_newer..).cloned().collect()
     }
+
+    /// The seq of the newest frame pushed, 0 before the first.
+    #[must_use]
+    pub(super) const fn newest_seq(&self) -> u64 {
+        self.next_seq.saturating_sub(FIRST_SEQ)
+    }
 }
 
 #[cfg(test)]

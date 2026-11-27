@@ -261,11 +261,7 @@ impl InboxSocket {
     #[must_use]
     pub fn frames_since(&self, since: u64) -> (Vec<InboxFrame>, u64) {
         let buffer = locked(&self.shared.buffer);
-        let frames = buffer.frames_since(since);
-        let newest_published = *self.shared.newest_seq.borrow();
-        drop(buffer);
-        let newest_seq = frames.last().map_or(newest_published, InboxFrame::seq);
-        (frames, newest_seq)
+        (buffer.frames_since(since), buffer.newest_seq())
     }
 }
 
