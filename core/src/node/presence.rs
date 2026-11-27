@@ -608,10 +608,7 @@ impl PresenceLoop {
             own_addresses,
             relay_statuses,
             requested_handle: identity.requested_handle,
-            init: Init::AwaitingJoin(PendingHandle {
-                assigned,
-                held_introduces: Vec::new(),
-            }),
+            init: Init::AwaitingJoin(PendingHandle::new(assigned)),
             announcer: Announcer::default(),
             reannounce_due: None,
             heard_requests: HeardPresenceRequests::default(),
@@ -789,13 +786,15 @@ impl PresenceLoop {
             None => {}
             Some(InitAction::Announce) => self.announce_presence().await,
             Some(InitAction::AssignHandle(pending)) => {
-                self.assign_own_handle(pending.assigned);
-                self.introduce_to(pending.held_introduces);
+                let (assigned, held_introduces) = pending.into_parts();
+                self.assign_own_handle(assigned);
+                self.introduce_to(held_introduces);
             }
             Some(InitAction::AssignHandleThenAnnounce(pending)) => {
-                self.assign_own_handle(pending.assigned);
+                let (assigned, held_introduces) = pending.into_parts();
+                self.assign_own_handle(assigned);
                 self.announce_presence().await;
-                self.introduce_to(pending.held_introduces);
+                self.introduce_to(held_introduces);
             }
         }
     }

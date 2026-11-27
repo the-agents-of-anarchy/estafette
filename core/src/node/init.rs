@@ -38,8 +38,23 @@ pub(super) enum Init {
 
 /// What init holds until it assigns the handle: where the handle goes, and each card this node would have introduced itself to meanwhile, once, in the order first asked.
 pub(super) struct PendingHandle {
-    pub(super) assigned: oneshot::Sender<LocalHandle>,
-    pub(super) held_introduces: Vec<wire::PublicKey>,
+    assigned: oneshot::Sender<LocalHandle>,
+    held_introduces: Vec<wire::PublicKey>,
+}
+
+impl PendingHandle {
+    /// A pending handle that sends the assigned handle through `assigned` and holds no Introduce yet.
+    pub(super) const fn new(assigned: oneshot::Sender<LocalHandle>) -> Self {
+        Self {
+            assigned,
+            held_introduces: Vec::new(),
+        }
+    }
+
+    /// The sender of the handle and the cards to introduce this node to, once, in the order first asked.
+    pub(super) fn into_parts(self) -> (oneshot::Sender<LocalHandle>, Vec<wire::PublicKey>) {
+        (self.assigned, self.held_introduces)
+    }
 }
 
 /// What moves init on: a join of the topic at a monotonic instant, a join that gained no neighbor, or the end of the observer wait.
