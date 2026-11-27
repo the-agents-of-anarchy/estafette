@@ -420,11 +420,57 @@ mod network_commands {
     fn spec_3_13_help_states_what_each_command_reads_produces_and_refuses() {
         let machine = Machine::fresh("help");
 
-        for subcommand in ["create", "join", "add-host", "show-invitation", "certify"] {
+        let statements_of_each_command: [(&str, [&str; 3]); 5] = [
+            (
+                "create",
+                [
+                    "Reads: whether a configuration file of that name exists.",
+                    "Produces: the network configuration file and the owner key file",
+                    "Refuses: a network name that breaks this rule",
+                ],
+            ),
+            (
+                "join",
+                [
+                    "Reads: the invitation argument.",
+                    "Produces: the network configuration file, readable by you alone",
+                    "Refuses: text that does not start with `estafette-invite-1:`",
+                ],
+            ),
+            (
+                "add-host",
+                [
+                    "Reads: the network configuration file and the host address line argument.",
+                    "Produces: the configuration file rewritten with the host added",
+                    "Refuses: a line that does not start with `estafette-host-1:`",
+                ],
+            ),
+            (
+                "show-invitation",
+                [
+                    "Reads: the network configuration file.",
+                    "Produces: one invitation string on stdout.",
+                    "Refuses: a network with no configuration file here",
+                ],
+            ),
+            (
+                "certify",
+                [
+                    "Reads: the owner key file of the network and the host address line argument.",
+                    "Produces: the host certificate, 128 lowercase hexadecimal characters, on stdout.",
+                    "Refuses: a network with no owner key file on this machine",
+                ],
+            ),
+        ];
+
+        for (subcommand, statements) in statements_of_each_command {
             let output = machine.run(&["network", subcommand, "--help"]);
             let help = stdout_of(&output);
-            for stated in ["Reads:", "Produces:", "Refuses:"] {
-                assert!(help.contains(stated), "{subcommand}: {help}");
+            for statement in statements {
+                assert!(
+                    help.contains(statement),
+                    "{subcommand} lacks {statement:?}: {help}"
+                );
             }
         }
     }
