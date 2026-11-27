@@ -82,6 +82,8 @@ mod observability {
         "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
     const CONFIG_HOME: &str = "config";
     const DATA_HOME: &str = "data";
+    const FRESH_DATA_HOME: &str = "fresh-data";
+    const PROGRAM_DIRECTORY: &str = "estafette";
     const RUNTIME_DIRECTORY: &str = "runtime";
     const PERMISSION_BITS: u32 = 0o777;
     const SPEC_DIRECTORY_MODE: u32 = 0o700;
@@ -209,6 +211,34 @@ mod observability {
         assert_eq!(mode_of(&events), SPEC_FILE_MODE);
         assert_eq!(mode_of(&raw), SPEC_FILE_MODE);
         remove_scratch(&root).unwrap();
+    }
+
+    #[test]
+    fn spec_3_3_the_mcp_command_makes_the_members_data_directory_0700_under_any_umask() {
+        for umask in [PERMISSIVE_UMASK, OWNER_READ_CLEARING_UMASK] {
+            let root = machine_with_network(&format!("member-data-{umask}"));
+            let fresh_data_home = root.join(FRESH_DATA_HOME);
+            fs::create_dir(&fresh_data_home).unwrap();
+
+            let output = Command::new("sh")
+                .args(["-c", &format!("umask {umask}; exec \"$0\" \"$@\""), BINARY])
+                .args(["mcp", NETWORK])
+                .env_clear()
+                .env("XDG_CONFIG_HOME", root.join(CONFIG_HOME))
+                .env("XDG_DATA_HOME", &fresh_data_home)
+                .env("XDG_RUNTIME_DIR", root.join(RUNTIME_DIRECTORY))
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+
+            assert!(output.status.success(), "umask {umask}: {output:?}");
+            assert_eq!(
+                mode_of(&fresh_data_home.join(PROGRAM_DIRECTORY)),
+                SPEC_DIRECTORY_MODE,
+                "umask {umask}"
+            );
+            remove_scratch(&root).unwrap();
+        }
     }
 
     #[test]
