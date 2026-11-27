@@ -1669,7 +1669,6 @@ pub(crate) mod tests {
     const READ_TIMEOUT_RESET_CODE_ON_THE_WIRE: u32 = 2;
     const UNANSWERED_RESET_CODE_ON_THE_WIRE: u32 = 3;
     const SPEC_SERVER_READ_TIMEOUT: Duration = Duration::from_secs(10);
-    const SPEC_SERVER_READ_TIMEOUT_LATEST: Duration = Duration::from_secs(11);
 
     async fn raw_connection(rig: &Rig) -> Connection {
         rig.link
@@ -3561,13 +3560,29 @@ pub(crate) mod tests {
         clock.move_forward(SILENCE_OF_A_GONE_PROCESS);
     }
 
-    /// How a stream left unfinished on the connection after one byte ends: reset at the server's read timeout while the connection stays open, or lost at its close; none when the closed connection took no stream.
+    /// The longest a test waits for a stream left unfinished on a connection to end, the server's wake for its read timeout to be asked of the test's clock included.
+    const UNFINISHED_STREAM_ENDS_WITHIN: Duration =
+        WAKE_ASKED_WAIT.saturating_add(DIRECT_ANSWER_WAIT);
+
+    /// How a stream left unfinished on the connection after one byte ends: reset at the server's read timeout, which the clock is moved to once the server has asked it for that wake, while the connection stays open, or lost at its close; none when the closed connection took no stream.
     async fn unfinished_stream_end(
         connection: &Connection,
+        clock: &StandingClock,
     ) -> Option<Result<Vec<u8>, ReadToEndError>> {
+        let opened_at = clock.now();
         let (mut send, mut recv) = connection.open_bi().await.ok()?;
         send.write_all(&[0]).await.ok()?;
-        Some(recv.read_to_end(WIRE_LIMIT_BYTES).await)
+        let mut read = std::pin::pin!(recv.read_to_end(WIRE_LIMIT_BYTES));
+        tokio::select! {
+            ended = &mut read => Some(ended),
+            () = clock.asked_to_wake(
+                "the server read timeout",
+                later_by(opened_at, SPEC_SERVER_READ_TIMEOUT),
+            ) => {
+                clock.move_forward(SPEC_SERVER_READ_TIMEOUT);
+                Some(read.await)
+            }
+        }
     }
 
     #[tokio::test]
@@ -3603,9 +3618,9 @@ pub(crate) mod tests {
 
         register.close_silent_of(card_of(CLIENT_SEED));
         let restarted_stream_end = answered_within(
-            SPEC_SERVER_READ_TIMEOUT_LATEST,
+            UNFINISHED_STREAM_ENDS_WITHIN,
             "end of a stream left unfinished on the restarted connection",
-            unfinished_stream_end(&restarted),
+            unfinished_stream_end(&restarted, &clock),
         )
         .await;
         let restarted_closed = restarted.close_reason();
