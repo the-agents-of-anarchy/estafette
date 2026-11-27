@@ -21,6 +21,8 @@ pub const RUN_SUBCOMMAND: &str = "run";
 pub const MESSAGING_SOCKET_VARIABLE: &str = "CLAUDE_CODE_MESSAGING_SOCKET";
 const CROSS_SESSION_INBOUND_KEY: &str = "crossSessionInbound";
 const SETTINGS_FLAG: &str = "--settings";
+const JSON_OBJECT_OPENER: char = '{';
+const OPTION_FLAG_PREFIX: char = '-';
 const COMMAND_LINE_SETTINGS_NAME: &str = "--settings on the harness command line";
 const UNREADABLE_FILE_NOTE: &str = "(the file cannot be read)";
 const ACCEPT_VALUE: &str = "accept";
@@ -302,28 +304,58 @@ fn settings_of_harness_command_line(
             .push(format!("process {harness_pid} is not in the process table"));
         return settings;
     };
-    for value in settings_flag_values(&harness.arguments) {
-        if value.trim_start().starts_with('{') {
-            settings.files.push(SettingsFile {
-                path: PathBuf::from(COMMAND_LINE_SETTINGS_NAME),
-                text: value,
-            });
-        } else if let Some(text) = read_text_file(Path::new(&value)) {
-            settings.files.push(SettingsFile {
-                path: PathBuf::from(value),
-                text,
-            });
-        } else {
-            settings
-                .unverified
-                .push(format!("{value} (the {SETTINGS_FLAG} file cannot be read)"));
+    for words in settings_flag_words(&harness.arguments) {
+        match settings_from_flag_words(&words, read_text_file) {
+            Ok(file) => settings.files.push(file),
+            Err(unverified) => settings.unverified.push(unverified),
         }
     }
     settings
 }
 
-/// Takes the value of each settings flag, joining its words up to the next dash word.
-fn settings_flag_values(arguments: &[String]) -> Vec<String> {
+/// Reads the settings a flag names as inline JSON or as the first run of its words that names a readable file.
+fn settings_from_flag_words(
+    words: &[&str],
+    read_text_file: &impl Fn(&Path) -> Option<String>,
+) -> Result<SettingsFile, String> {
+    let first_word = words.first().copied().unwrap_or_default();
+    if first_word.trim_start().starts_with(JSON_OBJECT_OPENER) {
+        return Ok(SettingsFile {
+            path: PathBuf::from(COMMAND_LINE_SETTINGS_NAME),
+            text: shortest_valid_json_run(words).unwrap_or_else(|| first_word.to_owned()),
+        });
+    }
+    let path_words = words
+        .iter()
+        .enumerate()
+        .take_while(|(position, word)| *position == 0 || !word.starts_with(OPTION_FLAG_PREFIX))
+        .map(|(_, word)| *word)
+        .collect::<Vec<_>>();
+    word_runs_from_the_first(&path_words)
+        .find_map(|run| {
+            read_text_file(Path::new(&run)).map(|text| SettingsFile {
+                path: PathBuf::from(run),
+                text,
+            })
+        })
+        .ok_or_else(|| format!("{first_word} (the {SETTINGS_FLAG} file cannot be read)"))
+}
+
+/// Joins the leading words of a list by single spaces, from the first word alone to all of them.
+fn word_runs_from_the_first<'a>(words: &'a [&str]) -> impl Iterator<Item = String> + 'a {
+    (1..=words.len())
+        .filter_map(|length| words.get(..length))
+        .map(|run| run.join(" "))
+}
+
+/// Finds the shortest run of leading words that joins into a valid JSON text.
+fn shortest_valid_json_run(words: &[&str]) -> Option<String> {
+    word_runs_from_the_first(words)
+        .find(|run| serde_json::from_str::<serde_json::Value>(run).is_ok())
+}
+
+/// Lists, for each settings flag, the words that may make up its value, led by the text after an `=`.
+fn settings_flag_words(arguments: &[String]) -> Vec<Vec<&str>> {
     let inline_prefix = format!("{SETTINGS_FLAG}=");
     arguments
         .iter()
@@ -334,16 +366,12 @@ fn settings_flag_values(arguments: &[String]) -> Vec<String> {
                 return None;
             }
             let following = arguments.get(position.saturating_add(1)..)?;
-            let words: Vec<&str> = inline_head
-                .into_iter()
-                .chain(
-                    following
-                        .iter()
-                        .map(String::as_str)
-                        .take_while(|word| !word.starts_with('-')),
-                )
-                .collect();
-            Some(words.join(" "))
+            Some(
+                inline_head
+                    .into_iter()
+                    .chain(following.iter().map(String::as_str))
+                    .collect(),
+            )
         })
         .collect()
 }
@@ -1063,6 +1091,49 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_12_doctor_reads_the_settings_file_alone_when_words_follow_it_on_the_command_line() {
+        let read_refusing_file =
+            |path: &Path| (path == Path::new("./s.json")).then(|| REFUSE_JSON.to_owned());
+        assert_eq!(
+            refuse_verdict_with_harness_arguments(
+                &["--settings", "./s.json", "fix", "the", "tests"],
+                &read_refusing_file
+            ),
+            Verdict::Failed(
+                "./s.json sets crossSessionInbound to refuse, which drops the bridge's frames"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            refuse_verdict_with_harness_arguments(
+                &["--settings", "./missing.json", "fix"],
+                &read_nothing
+            ),
+            Verdict::Unverified("./missing.json (the --settings file cannot be read)".to_owned())
+        );
+    }
+
+    #[test]
+    fn spec_3_12_doctor_reads_inline_settings_json_that_holds_a_dash_word() {
+        let refusing = Verdict::Failed(
+            "--settings on the harness command line sets crossSessionInbound to refuse, which drops the bridge's frames"
+                .to_owned(),
+        );
+        assert_eq!(
+            refuse_verdict_with_harness_arguments(
+                &[
+                    "--settings",
+                    "{\"crossSessionInbound\":\"refuse\",\"retries\":",
+                    "-1}",
+                    "fix"
+                ],
+                &read_nothing
+            ),
+            refusing
+        );
+    }
+
+    #[test]
     fn spec_3_12_doctor_reads_a_settings_file_named_on_the_harness_command_line() {
         let read_refusing_file =
             |path: &Path| (path == Path::new("/work/session.json")).then(|| REFUSE_JSON.to_owned());
@@ -1137,10 +1208,11 @@ mod tests {
     const GENERATED_CASES: u64 = 200;
 
     #[test]
-    fn spec_3_12_settings_flag_takes_every_word_up_to_the_next_dash_word_for_any_command_line() {
+    fn spec_3_12_settings_flag_tries_each_run_of_words_up_to_the_next_dash_word_as_a_path_for_any_command_line()
+     {
         for seed in 0..GENERATED_CASES {
             let mut state = seed;
-            let words: Vec<String> = (0..next_below(&mut state, 5))
+            let words: Vec<String> = (0..=next_below(&mut state, 4))
                 .map(|index| format!("w{}x{index}", next_below(&mut state, 1000)))
                 .collect();
             let settings_path = words.join(" ");
@@ -1156,9 +1228,21 @@ mod tests {
                 (path == Path::new(&settings_path)).then(|| REFUSE_JSON.to_owned())
             });
             assert!(matches!(verdict, Verdict::Failed(_)), "seed {seed}");
+            let prefixes_up_to_the_path: Vec<PathBuf> = (1..=words.len())
+                .map(|length| {
+                    PathBuf::from(
+                        words
+                            .iter()
+                            .take(length)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    )
+                })
+                .collect();
             assert_eq!(
                 *paths_asked.lock().expect("no panic holds the lock"),
-                [PathBuf::from(&settings_path)],
+                prefixes_up_to_the_path,
                 "seed {seed}"
             );
         }
