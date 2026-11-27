@@ -619,36 +619,55 @@ mod tests {
         }
     }
 
-    /// Spec 3.3: a rewrite keeps the relay of the record with the larger `ts`, whichever side holds it.
+    const RELAY_OF_LARGER_TS_CASES: u64 = 60;
+    const DRAWN_TS_VALUES: u64 = 4;
+    const FILE_RELAY: &str = "https://file/";
+    const HELD_RELAY: &str = "https://held/";
+
+    fn drawn_ts(draws: &mut crate::seeded_draws::Draws) -> Option<u64> {
+        match draws.below(DRAWN_TS_VALUES) {
+            0 => None,
+            value => Some(value),
+        }
+    }
+
+    /// Spec 3.3: a rewrite keeps the relay of the record with the larger `ts`, the held record's on a tie.
     #[test]
-    fn rewrite_keeps_the_relay_of_the_record_with_the_larger_ts() {
+    fn rewrite_keeps_the_relay_of_the_record_with_the_larger_ts_the_held_records_on_a_tie() {
         let directory = scratch_directory("relay-of-larger-ts");
-        let path = directory.join("net.toml");
-        network(vec![
-            learned(&host_id(b'a'), "https://file-a/", Some(200), NOW_MILLIS),
-            learned(&host_id(b'b'), "https://file-b/", Some(100), NOW_MILLIS),
-        ])
-        .rewrite(&path, NOW_SECONDS)
-        .unwrap();
-        let held = network(vec![
-            learned(&host_id(b'a'), "https://held-a/", Some(100), NOW_MILLIS),
-            learned(&host_id(b'b'), "https://held-b/", Some(200), NOW_MILLIS),
-        ]);
+        for case in 0..RELAY_OF_LARGER_TS_CASES {
+            let mut draws = crate::seeded_draws::Draws::seeded(case);
+            let file_ts = drawn_ts(&mut draws);
+            let held_ts = drawn_ts(&mut draws);
+            let path = directory.join(format!("net-{case}.toml"));
+            network(vec![learned(
+                &host_id(b'a'),
+                FILE_RELAY,
+                file_ts,
+                NOW_MILLIS,
+            )])
+            .rewrite(&path, NOW_SECONDS)
+            .unwrap();
+            let held = network(vec![learned(
+                &host_id(b'a'),
+                HELD_RELAY,
+                held_ts,
+                NOW_MILLIS,
+            )]);
 
-        let merged = held.rewrite(&path, NOW_SECONDS).unwrap();
+            let merged = held.rewrite(&path, NOW_SECONDS).unwrap();
 
-        let relay_and_ts_of = |id: String| {
-            let host = merged.hosts.iter().find(|host| host.id == id).unwrap();
-            (host.relay.as_str(), host.ts)
-        };
-        assert_eq!(
-            relay_and_ts_of(host_id(b'a')),
-            ("https://file-a/", Some(200))
-        );
-        assert_eq!(
-            relay_and_ts_of(host_id(b'b')),
-            ("https://held-b/", Some(200))
-        );
+            let expected_relay = if file_ts > held_ts {
+                FILE_RELAY
+            } else {
+                HELD_RELAY
+            };
+            assert_eq!(
+                merged.hosts[0].relay, expected_relay,
+                "case {case}: {file_ts:?} against {held_ts:?}"
+            );
+            assert_eq!(merged.hosts[0].ts, file_ts.max(held_ts), "case {case}");
+        }
     }
 
     /// Spec 3.3: a rewrite merges a concurrent writer's extra host, the larger ts and the later heard.
