@@ -22,4 +22,4 @@ pub use files::{
     create_new_owner_only_file, remove_file_if_present, with_cleanup_outcome, write_atomically,
     write_new_file_atomically,
 };
-pub use modes::{OWNER_ONLY_DIRECTORY_MODE, OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
+pub use modes::{OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
