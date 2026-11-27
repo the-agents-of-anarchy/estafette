@@ -167,20 +167,8 @@ impl Node {
         network: Network,
         effects: NodeEffects,
     ) -> Result<Self, NodeError> {
-        let client = Arc::new(DirectClient::new(
-            endpoint.endpoint().clone(),
-            network.keys.clone(),
-            ClientTimeouts::SPEC,
-            endpoint.held_connections(),
-        ));
-        let (to_loop, from_hosts) = mpsc::unbounded_channel();
-        let state = Arc::new(NodeState::new(
-            &identity,
-            Arc::clone(&client),
-            &effects,
-            to_loop,
-            endpoint.held_connections(),
-        ));
+        let (client, state, from_hosts) =
+            client_and_state(&endpoint, &identity, &network.keys, &effects);
         let fill_random_bytes = Arc::clone(&effects.fill_probe_nonce);
         let report = Arc::clone(&effects.report);
         let (presence_loop, own_handle) = PresenceLoop::join(
@@ -253,6 +241,34 @@ impl Drop for Node {
     fn drop(&mut self) {
         self.presence_loop.abort();
     }
+}
+
+/// The direct client and the shared state of a node on the endpoint, with the receiver through which its direct server hands effects to the loop.
+fn client_and_state(
+    endpoint: &NodeEndpoint,
+    identity: &Identity,
+    keys: &NetworkKeys,
+    effects: &NodeEffects,
+) -> (
+    Arc<DirectClient>,
+    Arc<NodeState>,
+    mpsc::UnboundedReceiver<LoopEvent>,
+) {
+    let client = Arc::new(DirectClient::new(
+        endpoint.endpoint().clone(),
+        keys.clone(),
+        ClientTimeouts::SPEC,
+        endpoint.held_connections(),
+    ));
+    let (to_loop, from_hosts) = mpsc::unbounded_channel();
+    let state = Arc::new(NodeState::new(
+        identity,
+        Arc::clone(&client),
+        effects,
+        to_loop,
+        endpoint.held_connections(),
+    ));
+    (client, state, from_hosts)
 }
 
 /// Serves the direct protocol and a fresh gossip instance on the endpoint, returning the router that shuts both down with the endpoint, and the gossip.
@@ -1649,20 +1665,8 @@ pub(super) mod tests {
             inbox: scratch.inbox(plan.seed),
             probe_relay: plan.probe_relay,
         };
-        let client = Arc::new(DirectClient::new(
-            node_endpoint.endpoint().clone(),
-            network.keys.clone(),
-            ClientTimeouts::SPEC,
-            node_endpoint.held_connections(),
-        ));
-        let (to_loop, from_hosts) = mpsc::unbounded_channel();
-        let state = Arc::new(NodeState::new(
-            &identity,
-            Arc::clone(&client),
-            &effects,
-            to_loop,
-            node_endpoint.held_connections(),
-        ));
+        let (client, state, from_hosts) =
+            client_and_state(&node_endpoint, &identity, &network.keys, &effects);
         let (presence_loop, _own_handle) = PresenceLoop::join(
             node_endpoint,
             identity,
