@@ -28,7 +28,6 @@ use crate::errors::ErrorCode;
 use crate::event::{Event, RunRecord};
 use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
-use crate::keys::parse_public_key;
 use crate::mcp::EndpointBinding;
 use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, message_id_text};
 use crate::net::endpoint::{BoundEndpoint, NodeEndpoint, SnapshotMoment};
@@ -61,7 +60,6 @@ const DEPARTURE_KIND: &str = "departure";
 const UNREACHABLE_KIND: &str = "unreachable";
 const INFRASTRUCTURE_KIND: &str = "infrastructure";
 const PRESENCE_REQUEST_KIND: &str = "presence-request";
-const OWNER_FIELD: &str = "owner";
 
 type SeedSource = Arc<dyn Fn(&mut [u8; SEED_BYTES]) + Send + Sync>;
 type BindEndpoint = Box<
@@ -522,7 +520,6 @@ fn write_line(stdout: &mut impl Write, line: &str) -> Result<(), Failure> {
 /// What a network command needs from its configuration file: the keys, the owner and the hosts.
 struct NetworkSetup {
     network: Network,
-    owner: iroh::PublicKey,
     hosts: Vec<KnownHostAddress>,
 }
 
@@ -534,18 +531,8 @@ fn load_network_setup(
     let path = directories.network_config_file(network);
     let config = NetworkConfig::load(&path).map_err(Failure::Config)?;
     let hosts = known_host_addresses(&config).map_err(Failure::Node)?;
-    let owner = parse_public_key(&config.owner).map_err(|source| {
-        Failure::Node(NodeError::NetworkKeyInvalid {
-            field: OWNER_FIELD,
-            source,
-        })
-    })?;
     let network = Network::new(config, path).map_err(Failure::Node)?;
-    Ok(NetworkSetup {
-        network,
-        owner,
-        hosts,
-    })
+    Ok(NetworkSetup { network, hosts })
 }
 
 /// Joins the network as an observer without a card on a fresh key, ready to be driven by `collect_peers` or `tail`.
@@ -582,7 +569,7 @@ async fn start_observation(
     let topic = NetworkTopic::join(
         &gossip,
         keys.clone(),
-        setup.owner,
+        setup.network.owner(),
         setup.hosts.iter().map(|host| host.id).collect(),
         Arc::clone(&effects.monotonic),
     )

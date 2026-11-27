@@ -26,7 +26,7 @@ use super::init::{Init, InitAction, InitEvent, PendingHandle};
 use super::known_hosts::{
     KnownHosts, RelayOfRecord, known_host_addresses, seed_lookup_with_known_hosts,
 };
-use super::node_error::NodeError;
+use super::node_error::{NetworkKeyField, NodeError};
 use super::payload_records::{
     broadcast_recording_outcome, named_admission_record, next_recorded_gossip_event,
 };
@@ -60,8 +60,6 @@ use crate::wire::{
 
 /// The longest a node goes without a snapshot of its counters, so a live process writes its events file at least this often (`spec/observability.md` decisions 9 and 13).
 const STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
-const SECRET_FIELD: &str = "secret";
-const OWNER_FIELD: &str = "owner";
 
 pub use crate::trace::Clock;
 
@@ -92,13 +90,13 @@ impl Network {
     pub fn new(config: NetworkConfig, config_path: PathBuf) -> Result<Self, NodeError> {
         let secret = parse_network_secret(&config.secret).map_err(|source| {
             NodeError::NetworkKeyInvalid {
-                field: SECRET_FIELD,
+                field: NetworkKeyField::Secret,
                 source,
             }
         })?;
         let owner =
             parse_public_key(&config.owner).map_err(|source| NodeError::NetworkKeyInvalid {
-                field: OWNER_FIELD,
+                field: NetworkKeyField::Owner,
                 source,
             })?;
         Ok(Self {
@@ -4046,13 +4044,16 @@ pub(super) mod tests {
         assert!(matches!(
             secret_refusal,
             Some(NodeError::NetworkKeyInvalid {
-                field: "secret",
+                field: NetworkKeyField::Secret,
                 ..
             })
         ));
         assert!(matches!(
             owner_refusal,
-            Some(NodeError::NetworkKeyInvalid { field: "owner", .. })
+            Some(NodeError::NetworkKeyInvalid {
+                field: NetworkKeyField::Owner,
+                ..
+            })
         ));
         assert_eq!(accepted.keys(), &keys());
     }

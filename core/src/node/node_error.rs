@@ -4,11 +4,27 @@ use crate::config::AcceptedValue;
 use crate::keys::KeyError;
 use crate::net::gossip::GossipError;
 
+/// The key of the network configuration that did not parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkKeyField {
+    Secret,
+    Owner,
+}
+
+impl fmt::Display for NetworkKeyField {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Secret => "secret",
+            Self::Owner => "owner",
+        })
+    }
+}
+
 /// Why the node did not start.
 #[derive(Debug)]
 pub enum NodeError {
     NetworkKeyInvalid {
-        field: &'static str,
+        field: NetworkKeyField,
         source: KeyError,
     },
     KnownHostInvalid {
