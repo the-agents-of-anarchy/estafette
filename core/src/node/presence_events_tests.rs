@@ -11,12 +11,13 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use super::tests::{
     FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_HANDLE,
     MARKER_PUBLIC, MARKER_SEED, MemberPlan, NOT_AN_ANNOUNCED_HANDLE, OWNER_SEED, REPLAYED_PUBLIC,
-    SECOND_EFFECTIVE_FIRST_HANDLE, SECOND_HANDLE, SECOND_MARKER_SEED, SECOND_PUBLIC, SECOND_SEED,
-    SPEC_ANNOUNCEMENT_MAX_AGE_MS, SPEC_INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS,
-    SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_PUBLIC, THIRD_SEED, WITNESS_HANDLE,
-    WITNESS_PUBLIC, WITNESS_SEED, bind, card, entry_meeting_within, infrastructure_of, keys,
-    message_to, noting_neighbors, relay_url, settable_clock, settled_direct_answers, short_peer_id,
-    spawn_member, start_members, start_members_reaching, start_pair, start_witnessed,
+    SECOND_EFFECTIVE_FIRST_HANDLE, SECOND_HANDLE, SECOND_HOST_RELAY, SECOND_HOST_SEED,
+    SECOND_MARKER_SEED, SECOND_PUBLIC, SECOND_SEED, SPEC_ANNOUNCEMENT_MAX_AGE_MS,
+    SPEC_INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE,
+    THIRD_PUBLIC, THIRD_SEED, WITNESS_HANDLE, WITNESS_PUBLIC, WITNESS_SEED, bind, card,
+    entry_meeting_within, infrastructure_of, keys, message_to, noting_neighbors, relay_url,
+    settable_clock, settled_direct_answers, short_peer_id, spawn_member, start_members,
+    start_members_reaching, start_pair, start_witnessed,
 };
 use crate::clock::RuntimeClock;
 use crate::config::MILLIS_PER_SECOND;
@@ -1312,7 +1313,7 @@ async fn spec_3_8_a_host_record_whose_relay_the_map_already_holds_records_no_rel
             infrastructure_of(HOST_SEED, HOST_RELAY, first_ts + 1),
         )
         .await;
-    let mut names = Vec::new();
+    let mut edits = Vec::new();
     let mut infrastructure_taken = 0;
     while infrastructure_taken < 2 {
         let (name, fields) = next_recorded_among(
@@ -1320,21 +1321,33 @@ async fn spec_3_8_a_host_record_whose_relay_the_map_already_holds_records_no_rel
             &[RELAY_MAP_EDITED, "gossip.payload_accepted"],
         )
         .await;
-        names.push(name);
         infrastructure_taken += usize::from(
             name == "gossip.payload_accepted"
                 && fields.contains(&("kind", Value::from("infrastructure"))),
         );
+        if name == RELAY_MAP_EDITED {
+            edits.push(fields);
+        }
+    }
+    witness
+        .broadcast_as(
+            SECOND_HOST_SEED,
+            infrastructure_of(SECOND_HOST_SEED, SECOND_HOST_RELAY, first_ts),
+        )
+        .await;
+    let second_host = short_peer_id(SECOND_HOST_SEED);
+    while !edits
+        .iter()
+        .any(|edit| edit.contains(&("host", second_host.clone())))
+    {
+        edits.push(next_recorded(&mut recorded, RELAY_MAP_EDITED).await);
     }
 
-    assert_eq!(
-        names
-            .iter()
-            .filter(|name| **name == RELAY_MAP_EDITED)
-            .count(),
-        1,
-        "{names:?}"
-    );
+    let edits_of_the_held_relay = edits
+        .iter()
+        .filter(|edit| edit.contains(&("host", short_peer_id(HOST_SEED))))
+        .count();
+    assert_eq!(edits_of_the_held_relay, 1, "{edits:?}");
     drop(scratch);
 }
 
