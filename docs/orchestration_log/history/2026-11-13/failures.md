@@ -199,3 +199,11 @@ What happened: The turn that ended at 12:48 carried repeated looks at the silenc
 Mechanism: The marker look was used as a ritual close of each turn rather than taken once when the marker could have changed.
 
 Correction: A turn ends at its last act that advances the work, with an empty message and no further call; the marker is looked at only after a step that could remove it.
+
+## A loop stop was called with no loop running
+
+What happened: At 13:22 lead-alpha called ScheduleWakeup with stop true though no self-paced loop ran; the call changed nothing and put off the end of the turn.
+
+Mechanism: The wake for the pending cleaner was a one-shot cron, so the check-back rule to end a loop did not apply; the call was made by habit after setting a wake.
+
+Correction: Call ScheduleWakeup only inside a self-paced loop; after setting a cron wake, end the turn with an empty message.
