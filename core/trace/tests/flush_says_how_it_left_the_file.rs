@@ -126,6 +126,7 @@ mod observability {
         let TraceStop::NotCut {
             file: TraceFileKind::Events,
             source,
+            ..
         } = stop
         else {
             panic!("{stop:?}");

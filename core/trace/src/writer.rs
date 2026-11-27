@@ -448,9 +448,17 @@ impl FileTrace {
         }
     }
 
-    /// How the writer's end left this file: not reported when the lines it lost could not be counted in a `dropped` line, otherwise as its answer to a flush.
+    /// How the writer's end left this file, saying the cut failure and the count of lines it could not report in a `dropped` line, each when there is one.
     fn stop_ended(&self, end: Option<WriterEnd>) -> TraceStop {
         match end {
+            Some(WriterEnd {
+                unreported,
+                cut: Err(source),
+            }) => TraceStop::NotCut {
+                file: self.kind,
+                source,
+                unreported,
+            },
             Some(WriterEnd {
                 unreported: unreported @ 1..,
                 cut: Ok(()),
@@ -458,8 +466,11 @@ impl FileTrace {
                 file: self.kind,
                 unreported,
             },
-            Some(WriterEnd { unreported: _, cut }) => self.stop_answered(Some(cut)),
-            None => self.stop_answered(None),
+            Some(WriterEnd {
+                unreported: 0,
+                cut: Ok(()),
+            }) => TraceStop::Drained,
+            None => TraceStop::NotDrained { file: self.kind },
         }
     }
 
@@ -470,6 +481,7 @@ impl FileTrace {
             Some(Err(source)) => TraceStop::NotCut {
                 file: self.kind,
                 source,
+                unreported: 0,
             },
             None => TraceStop::NotDrained { file: self.kind },
         }

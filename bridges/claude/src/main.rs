@@ -1014,8 +1014,9 @@ where
             true
         });
     let status = exit_code_of(outcome, &record);
-    if let Some(unfinished) = trace.and_then(|trace| trace.finish()) {
-        run_record_on(errors, None)(unfinished);
+    let standard_error = run_record_on(errors, None);
+    for unfinished in trace.map(|trace| trace.finish()).unwrap_or_default() {
+        standard_error(unfinished);
     }
     status
 }
@@ -3163,6 +3164,60 @@ mod tests {
         fn set_length(&mut self, _length: u64) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    struct WriteRefusingUncuttableFile {
+        sized_bytes: u64,
+    }
+
+    impl Write for WriteRefusingUncuttableFile {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other(STAND_IN_FAILURE))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl estafette_trace::TraceFile for WriteRefusingUncuttableFile {
+        fn set_length(&mut self, length: u64) -> io::Result<()> {
+            if length < self.sized_bytes {
+                return Err(io::Error::other(STAND_IN_FAILURE));
+            }
+            self.sized_bytes = length;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn observability_decision_12_a_stop_whose_events_file_can_neither_be_cut_back_nor_take_the_dropped_line_says_both_on_standard_error_cut_first()
+     {
+        let probe = TraceProbe::new("not-cut-and-loss-unreported");
+        let effects = TraceEffects {
+            create_file: Arc::new(|_path: &Path| {
+                let refusing: Box<dyn estafette_trace::TraceFile> =
+                    Box::new(WriteRefusingUncuttableFile { sized_bytes: 0 });
+                Ok(refusing)
+            }),
+            ..TraceEffects::of_the_operating_system(frozen_trace_clocks())
+        };
+
+        let (status, written) = probe.run(Tracing::Debug, effects, TraceBounds::SPEC);
+
+        let last_two: Vec<&str> = written.lines().rev().take(2).collect();
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert_eq!(
+            last_two,
+            [
+                format!(
+                    "the debug trace could not write at the stop the count of {LINES_OF_A_RUN_THAT_RECORDS_NOTHING_BESIDES_ITS_START_AND_EXIT} lines it lost or could not write in its events file: the file does not say they are missing"
+                )
+                .as_str(),
+                "the debug trace could not cut its events file back to its last line at the stop, so the file ends in zero bytes: a stand-in failure",
+            ],
+            "{written}"
+        );
     }
 
     #[test]

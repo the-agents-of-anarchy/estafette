@@ -78,18 +78,24 @@ impl DebugTrace {
         self.events.write(event.name().as_str(), &event.fields());
     }
 
-    /// Closes the queue and waits within the drain bound for the writer, giving the event of a stop that left the file unfinished.
-    pub fn finish(&self) -> Option<BridgeEvent> {
+    /// Closes the queue and waits within the drain bound for the writer, giving the events of a stop that left the file unfinished, the cut failure before the count of lines it could not report.
+    pub fn finish(&self) -> Vec<BridgeEvent> {
         match self.events.finish() {
-            TraceStop::Drained => None,
+            TraceStop::Drained => Vec::new(),
             TraceStop::NotDrained { file: _ } => {
-                Some(BridgeEvent::TraceNotDrained { drain: self.drain })
+                vec![BridgeEvent::TraceNotDrained { drain: self.drain }]
             }
-            TraceStop::NotCut { file: _, source } => Some(BridgeEvent::TraceNotCut(source)),
+            TraceStop::NotCut {
+                file: _,
+                source,
+                unreported,
+            } => std::iter::once(BridgeEvent::TraceNotCut(source))
+                .chain((unreported > 0).then_some(BridgeEvent::TraceLossUnreported { unreported }))
+                .collect(),
             TraceStop::NotReported {
                 file: _,
                 unreported,
-            } => Some(BridgeEvent::TraceLossUnreported { unreported }),
+            } => vec![BridgeEvent::TraceLossUnreported { unreported }],
         }
     }
 }

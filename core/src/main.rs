@@ -355,16 +355,25 @@ fn report_unfinished_trace_stops(
     standard_error: &RunRecord,
 ) {
     for stop in stops {
-        let unfinished = match stop {
-            TraceStop::Drained => None,
-            TraceStop::NotDrained { file } => Some(ProcessEvent::TraceNotDrained { file, drain }),
-            TraceStop::NotCut { file, source } => Some(ProcessEvent::TraceNotCut { file, source }),
+        let unfinished: Vec<ProcessEvent> = match stop {
+            TraceStop::Drained => Vec::new(),
+            TraceStop::NotDrained { file } => vec![ProcessEvent::TraceNotDrained { file, drain }],
+            TraceStop::NotCut {
+                file,
+                source,
+                unreported,
+            } => std::iter::once(ProcessEvent::TraceNotCut { file, source })
+                .chain(
+                    (unreported > 0)
+                        .then_some(ProcessEvent::TraceLossUnreported { file, unreported }),
+                )
+                .collect(),
             TraceStop::NotReported { file, unreported } => {
-                Some(ProcessEvent::TraceLossUnreported { file, unreported })
+                vec![ProcessEvent::TraceLossUnreported { file, unreported }]
             }
         };
-        if let Some(unfinished) = unfinished {
-            standard_error(unfinished.into());
+        for event in unfinished {
+            standard_error(event.into());
         }
     }
 }
@@ -1698,6 +1707,38 @@ mod tests {
         }
     }
 
+    /// Creates trace files that refuse every write and refuse to be cut back.
+    fn write_refusing_uncuttable_trace_files() -> CreateTraceFile {
+        Arc::new(|_path: &Path| -> io::Result<Box<dyn TraceFile>> {
+            Ok(Box::new(WriteRefusingUncuttableTraceFile { sized: 0 }))
+        })
+    }
+
+    /// A trace file that refuses every write and every length but one past the size it was last given.
+    struct WriteRefusingUncuttableTraceFile {
+        sized: u64,
+    }
+
+    impl TraceFile for WriteRefusingUncuttableTraceFile {
+        fn set_length(&mut self, length: u64) -> io::Result<()> {
+            if length <= self.sized {
+                return Err(io::Error::other(STAND_IN_SHRINK_REFUSAL));
+            }
+            self.sized = length;
+            Ok(())
+        }
+    }
+
+    impl Write for WriteRefusingUncuttableTraceFile {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other(STAND_IN_WRITE_REFUSAL))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     /// A trace file that refuses every length but one past the size it was last given, discarding what is written to it.
     struct UncuttableTraceFile {
         sized: u64,
@@ -1803,6 +1844,50 @@ mod tests {
                 SPEC_EVENTS_FILE_WORD,
                 LINES_OF_A_COMMAND_THAT_RECORDS_NOTHING_BESIDES_ITS_START_AND_EXIT
             )]
+        );
+    }
+
+    #[test]
+    fn observability_decision_12_an_events_file_that_can_neither_be_cut_back_nor_take_the_dropped_line_says_both_on_standard_error_cut_first_and_the_status_stands()
+     {
+        const SCRATCH_PREFIX: &str = "estafette-trace-not-cut-and-loss-unreported";
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
+        let trace_effects = trace_effects_creating(
+            write_refusing_uncuttable_trace_files(),
+            TraceEffects::of_the_operating_system(trace_clocks_started_now()).create_file,
+        );
+        let standard_error = SharedRecord::default();
+
+        let status = run_traced(
+            TRACED_COMMAND,
+            Tracing::Debug,
+            environment,
+            CardsDirectoryOverride::Offered(None),
+            standard_error.clone(),
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
+                effects: &trace_effects,
+                bounds: TraceBounds {
+                    drain: STOP_REPORTED_WITHIN,
+                    ..TraceBounds::SPEC
+                },
+                install_iroh_lines: IROH_LINES_LEFT_OUT,
+                record_panics: PANICS_LEFT_UNRECORDED,
+            },
+            |_directories, _process| Ok(ExitStatus::Success),
+        );
+
+        assert_eq!(status, ExitStatus::Success);
+        assert_eq!(
+            lines_after_the_announcement(&standard_error),
+            [
+                spec_not_cut_line(SPEC_EVENTS_FILE_WORD),
+                spec_loss_unreported_line(
+                    SPEC_EVENTS_FILE_WORD,
+                    LINES_OF_A_COMMAND_THAT_RECORDS_NOTHING_BESIDES_ITS_START_AND_EXIT
+                )
+            ]
         );
     }
 

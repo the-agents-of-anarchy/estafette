@@ -161,10 +161,11 @@ pub enum TraceStop {
     Drained,
     /// The writer of the file named did not report within the drain bound that it took every queued line.
     NotDrained { file: TraceFileKind },
-    /// The writer of the file named took every queued line, but the file was sized past its last line and could not be cut back to it, so zero bytes follow that line.
+    /// The writer of the file named took every queued line, but the file was sized past its last line and could not be cut back to it, so zero bytes follow that line, and `unreported` lines lost or unwritten are counted in no `dropped` line, none when it is 0.
     NotCut {
         file: TraceFileKind,
         source: io::Error,
+        unreported: u64,
     },
     /// The writer of the file named took every queued line and cut the file back, but the last `dropped` line, carrying the count of lines lost or unwritten, could not be written, so the file does not say that count.
     NotReported {
@@ -179,9 +180,14 @@ impl TraceStop {
         match self {
             Self::Drained => Self::Drained,
             Self::NotDrained { file } => Self::NotDrained { file: *file },
-            Self::NotCut { file, source } => Self::NotCut {
+            Self::NotCut {
+                file,
+                source,
+                unreported,
+            } => Self::NotCut {
                 file: *file,
                 source: io::Error::new(source.kind(), source.to_string()),
+                unreported: *unreported,
             },
             Self::NotReported { file, unreported } => Self::NotReported {
                 file: *file,

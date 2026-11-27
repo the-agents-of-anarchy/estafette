@@ -55,6 +55,31 @@ mod observability {
     const LINES_THE_FILE_REFUSES: u64 = 3;
     const SHORT_DRAIN: Duration = Duration::from_millis(20);
 
+    /// A trace file that refuses every write and refuses to be cut back below the length it was sized to.
+    struct RefusingAndUncuttableFile {
+        sized: u64,
+    }
+
+    impl Write for RefusingAndUncuttableFile {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other(STAND_IN_WRITE_REFUSAL))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl TraceFile for RefusingAndUncuttableFile {
+        fn set_length(&mut self, length: u64) -> io::Result<()> {
+            if length < self.sized {
+                return Err(io::Error::other(STAND_IN_SHRINK_REFUSAL));
+            }
+            self.sized = length;
+            Ok(())
+        }
+    }
+
     /// A trace file that refuses every write and can be cut back to any length.
     struct RefusingFile;
 
@@ -114,10 +139,12 @@ mod observability {
             TraceStop::NotCut {
                 file: TraceFileKind::Events,
                 source: first_source,
+                unreported: 0,
             },
             TraceStop::NotCut {
                 file: TraceFileKind::Events,
                 source: second_source,
+                unreported: 0,
             },
         ) = (&first, &second)
         else {
@@ -222,5 +249,35 @@ mod observability {
             ),
             "{first:?} then {second:?}"
         );
+    }
+
+    #[test]
+    fn observability_decision_12_a_finish_whose_file_can_neither_be_cut_back_nor_take_the_dropped_line_reports_both_and_a_second_finish_reports_both_again()
+     {
+        let run = run_creating(
+            Arc::new(|_path: &Path| -> io::Result<Box<dyn TraceFile>> {
+                Ok(Box::new(RefusingAndUncuttableFile { sized: 0 }))
+            }),
+            TraceBounds::SPEC,
+        );
+        let events = run.open_events().unwrap();
+        for _ in 0..LINES_THE_FILE_REFUSES {
+            events.write(ONE_EVENT, &[]);
+        }
+
+        let first = events.finish();
+        let second = events.finish();
+
+        for stop in [&first, &second] {
+            let TraceStop::NotCut {
+                file: TraceFileKind::Events,
+                source,
+                unreported: LINES_THE_FILE_REFUSES,
+            } = stop
+            else {
+                panic!("{first:?} then {second:?}");
+            };
+            assert_eq!(source.to_string(), STAND_IN_SHRINK_REFUSAL);
+        }
     }
 }
