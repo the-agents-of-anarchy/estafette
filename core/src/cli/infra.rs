@@ -22,8 +22,8 @@ use tokio::time::{Instant, Interval, MissedTickBehavior, interval};
 
 use super::debug::DebugArgs;
 use super::network::NetworkFilesystem;
-use crate::clock::MonotonicClock;
-use crate::config::{ConfigError, MILLIS_PER_SECOND, NetworkConfig};
+use crate::clock::{MILLIS_PER_SECOND, MonotonicClock};
+use crate::config::{ConfigError, NetworkConfig};
 use crate::crypto::{
     GateKey, HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, parse_host_certificate, verify_host_certificate,
 };

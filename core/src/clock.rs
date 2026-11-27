@@ -5,6 +5,9 @@ use std::time::Duration;
 
 use tokio::time::{Instant, sleep_until};
 
+/// Milliseconds in a second, the one conversion between the clocks' seconds and milliseconds.
+pub(crate) const MILLIS_PER_SECOND: u64 = 1000;
+
 /// A monotonic clock, read for the instant now and waited on until it reads a deadline.
 pub trait MonotonicTime: Send + Sync {
     /// The instant the clock reads now.

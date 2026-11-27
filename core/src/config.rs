@@ -8,14 +8,13 @@ use estafette_private_entry::write_atomically;
 use iroh::RelayUrl;
 use serde::{Deserialize, Serialize};
 
+use crate::clock::MILLIS_PER_SECOND;
 use crate::keys::HEX_CHARS_PER_KEY;
 use crate::wire::{self, MAX_RELAY_URL_BYTES};
 
 const HIDDEN_SECRET_DEBUG_TEXT: &str = "..";
 pub(crate) const SECRET_FIELD: &str = "secret";
 pub(crate) const OWNER_FIELD: &str = "owner";
-
-pub(crate) const MILLIS_PER_SECOND: u64 = 1000;
 const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * MILLIS_PER_SECOND;
 const LEARNED_HOST_EXPIRY_DAYS: u64 = 30;
 const LEARNED_HOST_EXPIRY_MILLIS: u64 = LEARNED_HOST_EXPIRY_DAYS * MILLIS_PER_DAY;

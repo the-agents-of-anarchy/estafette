@@ -295,7 +295,8 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::*;
-    use crate::config::{Host, HostOrigin, MILLIS_PER_SECOND};
+    use crate::clock::MILLIS_PER_SECOND;
+    use crate::config::{Host, HostOrigin};
     use crate::event::{Event, RunRecord};
     use crate::net::direct::tests::StandingClock;
     use crate::net::direct::{ClientTimeouts, DirectClient};

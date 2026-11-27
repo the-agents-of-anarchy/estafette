@@ -19,8 +19,7 @@ use super::tests::{
     settable_clock, settled_direct_answers, short_peer_id, spawn_member, start_members,
     start_members_reaching, start_pair, start_witnessed,
 };
-use crate::clock::RuntimeClock;
-use crate::config::MILLIS_PER_SECOND;
+use crate::clock::{MILLIS_PER_SECOND, RuntimeClock};
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{EventFields, RunRecord};
 use crate::net::direct::tests::{test_salt, unrecorded_register};
