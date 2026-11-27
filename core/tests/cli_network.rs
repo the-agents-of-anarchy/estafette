@@ -7,7 +7,7 @@ mod this_process_directory;
 #[cfg(test)]
 mod network_commands {
     use std::fs;
-    use std::io::{self, Write};
+    use std::io;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Output};
@@ -19,7 +19,6 @@ mod network_commands {
     use estafette::dirs::{
         CardsDirectoryOverride, Directories, DirectoryFilesystem, OperatingSystemFilesystem,
     };
-    use estafette::handle::Handle;
     use estafette::invite::{parse_invitation, render_host_line, render_invitation};
     use estafette::keys::{parse_public_key, parse_secret_key, render_public_key};
     use estafette::wire::{self, HostAddr, Invitation, RelayUrl, Version};
@@ -51,14 +50,27 @@ mod network_commands {
             Self { root }
         }
 
-        fn run(&self, arguments: &[&str]) -> Output {
-            Command::new(BINARY)
+        fn command(&self, arguments: &[&str]) -> Command {
+            let mut command = Command::new(BINARY);
+            command
                 .args(arguments)
                 .env_clear()
                 .env("HOME", &self.root)
                 .env("XDG_CONFIG_HOME", self.root.join("config"))
                 .env("XDG_DATA_HOME", self.root.join("data"))
-                .env("XDG_RUNTIME_DIR", self.root.join("runtime"))
+                .env("XDG_RUNTIME_DIR", self.root.join("runtime"));
+            command
+        }
+
+        fn run(&self, arguments: &[&str]) -> Output {
+            self.command(arguments).output().unwrap()
+        }
+
+        fn run_with_standard_output_closed(&self, arguments: &[&str]) -> Output {
+            let (closed_reader, standard_output) = io::pipe().unwrap();
+            drop(closed_reader);
+            self.command(arguments)
+                .stdout(standard_output)
                 .output()
                 .unwrap()
         }
@@ -589,18 +601,6 @@ mod network_commands {
         assert_refused_with_one_line(&output, "the host's node id is not an Ed25519 public key");
     }
 
-    struct BrokenPipe;
-
-    impl Write for BrokenPipe {
-        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
-            Err(io::ErrorKind::BrokenPipe.into())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
     #[test]
     fn spec_3_13_certify_host_refuses_an_owner_key_file_that_is_not_a_key() {
         let machine = Machine::fresh("certify-bad-owner-key");
@@ -683,36 +683,10 @@ mod network_commands {
         machine.run(&["network", "create", NETWORK]);
         let host = host_address(7, "https://relay-one.example/");
         machine.run(&["network", "add-host", NETWORK, &host_line(&host)]);
-        let root = machine.root;
-        let directories = Directories::establish(
-            |name| match name {
-                "XDG_CONFIG_HOME" => Some(root.join("config").into_os_string()),
-                "XDG_DATA_HOME" => Some(root.join("data").into_os_string()),
-                "XDG_RUNTIME_DIR" => Some(root.join("runtime").into_os_string()),
-                _ => None,
-            },
-            &OperatingSystemFilesystem::of_this_process().unwrap(),
-            CardsDirectoryOverride::Offered(None),
-        )
-        .unwrap();
-        let command = NetworkCommand::ShowInvitation {
-            network: NETWORK.parse::<Handle>().unwrap(),
-        };
 
-        let refusal = run(
-            &command,
-            &directories,
-            &OperatingSystemFilesystem::of_this_process().unwrap(),
-            |_bytes| (),
-            0,
-            &mut BrokenPipe,
-            &mut io::sink(),
-        )
-        .unwrap_err();
+        let output =
+            machine.run_with_standard_output_closed(&["network", "show-invitation", NETWORK]);
 
-        assert!(
-            refusal.to_string().starts_with("cannot write the result"),
-            "{refusal}"
-        );
+        assert_refused_with_one_line(&output, "cannot write the result");
     }
 }
