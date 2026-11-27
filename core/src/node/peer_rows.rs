@@ -7,7 +7,7 @@ use iroh::EndpointId;
 use super::direct_requests::DirectAnswer;
 #[cfg(test)]
 use super::direct_requests::{DirectContact, DirectExchange, RequestCause};
-use super::payload_records::signer_admission_record;
+use super::payload_records::admission_record;
 use crate::event::{PeerTableEvent, RunRecord};
 use crate::net::direct::HeldConnections;
 use crate::payload::{DescribedPayload, PayloadDropRule};
@@ -173,7 +173,9 @@ impl PeerRows {
             record,
         ) = self.operate_on_locked_table(|table| {
             let admitted = payload.admit_to(table, now_ms);
-            let record = signer_admission_record(table, payload.facts(), &admitted.value, now_ms);
+            let facts = payload.facts();
+            let signer_handle = table.handle_of(facts.signer, now_ms);
+            let record = admission_record(facts, signer_handle, &admitted.value);
             (admitted, record)
         });
         (self.report)(record);
