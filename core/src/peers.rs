@@ -548,7 +548,7 @@ impl PeerTable {
         let peer = self.peers.get_mut(&card, now_ms)?;
         let from = peer.status;
         let outcome = change(peer);
-        if from.wire_word() != peer.status.wire_word() {
+        if std::mem::discriminant(&from) != std::mem::discriminant(&peer.status) {
             changes.push(TableChange::Moved {
                 card,
                 handle: peer.effective_handle.clone(),
