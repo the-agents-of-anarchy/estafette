@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use iroh::RelayUrl;
 use serde::{Deserialize, Serialize};
 
-use crate::wire::{self, HIDDEN_SECRET_DEBUG_TEXT, MAX_RELAY_URL_BYTES};
+use crate::wire::{self, MAX_RELAY_URL_BYTES};
+
+const HIDDEN_SECRET_DEBUG_TEXT: &str = "..";
 
 pub(crate) const MILLIS_PER_SECOND: u64 = 1000;
 const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * MILLIS_PER_SECOND;

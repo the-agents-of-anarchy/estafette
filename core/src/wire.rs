@@ -19,7 +19,6 @@ const SIGNATURE_BYTES: usize = 64;
 const PROBE_NONCE_BYTES: usize = 16;
 const MESSAGE_ID_BYTES: usize = 16;
 const PUBLIC_KEY_BYTES: usize = 32;
-pub(crate) const HIDDEN_SECRET_DEBUG_TEXT: &str = "..";
 
 pub type Nonce = [u8; PROBE_NONCE_BYTES];
 pub type MessageId = [u8; MESSAGE_ID_BYTES];
@@ -545,26 +544,13 @@ wire_struct! {
 }
 
 wire_struct_deriving! {
-    #[derive(Clone, PartialEq, Eq, Serialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct Invitation {
         pub v: Version,
         pub network: String,
         pub secret: NetworkSecret,
         pub owner: PublicKey,
         pub hosts: Vec<HostAddr>,
-    }
-}
-
-impl fmt::Debug for Invitation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Invitation")
-            .field("v", &self.v)
-            .field("network", &self.network)
-            .field("secret", &format_args!("{HIDDEN_SECRET_DEBUG_TEXT}"))
-            .field("owner", &self.owner)
-            .field("hosts", &self.hosts)
-            .finish()
     }
 }
 
@@ -1308,6 +1294,22 @@ mod tests {
                 &[PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES],
             ],
         );
+    }
+
+    #[test]
+    fn spec_3_3_an_invitations_debug_text_shows_its_secret_through_the_secrets_own_hiding() {
+        let invitation = Invitation {
+            v: Version::CURRENT,
+            network: "n".to_owned(),
+            secret: secret_of(PINNED_SECRET_BYTE),
+            owner: key_of(PINNED_SECOND_KEY_BYTE),
+            hosts: Vec::new(),
+        };
+
+        let text = format!("{invitation:?}");
+
+        assert!(text.contains("secret: NetworkSecret { .. }"), "{text}");
+        assert!(!text.contains(&PINNED_SECRET_BYTE.to_string()), "{text}");
     }
 
     #[test]
