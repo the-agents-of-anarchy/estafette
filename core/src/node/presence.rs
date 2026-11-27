@@ -2198,7 +2198,7 @@ pub(super) mod tests {
                     SECOND_SEED,
                     SECOND_HANDLE,
                     REPLAYED_PUBLIC,
-                    earlier_session_seq,
+                    earlier_session_seq + 1,
                 ),
             )
             .await;
