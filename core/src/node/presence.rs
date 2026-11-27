@@ -4,7 +4,7 @@ use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, MutexGuard, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use iroh::endpoint::RelayStatus;
@@ -49,7 +49,7 @@ use crate::payload::{
     DescribedPayload, OpenedPayload, PayloadDropRule, PayloadFacts, ZERO_MAC, ZERO_SIGNATURE,
 };
 use crate::peers::{
-    ContactSucceeded, Effect, FailedContactKind, Operated, Peer, PeerTable, announced_sender_handle,
+    ContactSucceeded, Effect, FailedContactKind, Operated, Peer, announced_sender_handle,
 };
 use crate::stream_items::{Stream, StreamExt};
 use crate::wire::{
@@ -204,7 +204,9 @@ impl Node {
     #[must_use]
     pub fn peers(&self) -> Vec<Peer> {
         let now_ms = self.state.now_ms();
-        self.state.table().peers(now_ms).cloned().collect()
+        self.state
+            .rows
+            .read(|table| table.peers(now_ms).cloned().collect())
     }
 
     /// Starts refusing Messages and ignoring Probes and Introduces, and hands the Departure to the presence loop.
@@ -359,11 +361,6 @@ impl NodeState {
         self.rows
             .change(|table| table.direct_contact_succeeded(card, now_ms, ContactSucceeded::Send));
         self.hand_to_loop(LoopEvent::PeerReached);
-    }
-
-    /// The peer table, locked for one operation.
-    pub(super) fn table(&self) -> MutexGuard<'_, PeerTable> {
-        self.rows.table()
     }
 
     /// The full current address of this node's endpoint, within the caps of spec 3.6.
@@ -885,7 +882,8 @@ impl PresenceLoop {
 
     /// Records what the lookup entry of `card` now holds, naming the card by the handle the table holds for it: how many direct addresses and whether a relay, never where.
     pub(super) fn record_lookup_of(&self, card: &wire::PublicKey) {
-        let handle = self.state.table().handle_of(*card, self.state.now_ms());
+        let now_ms = self.state.now_ms();
+        let handle = self.state.rows.read(|table| table.handle_of(*card, now_ms));
         if let Some(event) = lookup_replaced_event(&self.endpoint, card, handle) {
             (self.report)(event);
         }

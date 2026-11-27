@@ -295,12 +295,14 @@ impl PresenceLoop {
 
     /// The node ids of the peers whose status is `wanted`.
     fn peers_with_status(&self, wanted: Status) -> Vec<EndpointId> {
-        self.state
-            .table()
-            .peers(self.state.now_ms())
-            .filter(|peer| peer.status == wanted)
-            .filter_map(|peer| endpoint_id(&peer.card))
-            .collect()
+        let now_ms = self.state.now_ms();
+        self.state.rows.read(|table| {
+            table
+                .peers(now_ms)
+                .filter(|peer| peer.status == wanted)
+                .filter_map(|peer| endpoint_id(&peer.card))
+                .collect()
+        })
     }
 
     /// Closes the endpoint with the direct listener and the gossip instance on it, and with them every connection, recording a shutdown that failed.
@@ -356,12 +358,11 @@ impl PresenceLoop {
 
     /// Strips the relays found down from the lookup entry of every other member, recording each entry it changes.
     fn strip_relays_from_members(&self, down: &BTreeSet<RelayUrl>) {
+        let now_ms = self.state.now_ms();
         let members: Vec<wire::PublicKey> = self
             .state
-            .table()
-            .peers(self.state.now_ms())
-            .map(|peer| peer.card)
-            .collect();
+            .rows
+            .read(|table| table.peers(now_ms).map(|peer| peer.card).collect());
         for card in members {
             let Some(address) = endpoint_id(&card).and_then(|id| self.endpoint.address_of(id))
             else {

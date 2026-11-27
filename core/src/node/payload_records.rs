@@ -39,7 +39,7 @@ fn held_signer_handle_of_node(
     table_at: Option<(&PeerRows, u64)>,
     facts: &PayloadFacts,
 ) -> Option<LocalHandle> {
-    table_at.and_then(|(rows, now_ms)| rows.table().handle_of(facts.signer, now_ms))
+    table_at.and_then(|(rows, now_ms)| rows.read(|table| table.handle_of(facts.signer, now_ms)))
 }
 
 /// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle its peer table holds for it at that instant in milliseconds when the node keeps one.

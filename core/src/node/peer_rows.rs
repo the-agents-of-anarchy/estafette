@@ -130,8 +130,13 @@ impl PeerRows {
     }
 
     /// The peer table, locked for one operation.
-    pub(crate) fn table(&self) -> MutexGuard<'_, PeerTable> {
+    fn table(&self) -> MutexGuard<'_, PeerTable> {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Runs one query on the locked table, returning what it gave once the lock is released.
+    pub(crate) fn read<Given>(&self, query: impl FnOnce(&PeerTable) -> Given) -> Given {
+        query(&self.table())
     }
 
     /// Runs one operation on the locked table, returning what it gave once the lock is released.

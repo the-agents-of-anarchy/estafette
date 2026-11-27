@@ -3,7 +3,7 @@ use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, MutexGuard};
+use std::sync::Arc;
 
 use clap::Subcommand;
 use data_encoding::HEXLOWER;
@@ -41,7 +41,7 @@ use crate::node::{
     taken_without_a_row_record, wire_addr,
 };
 use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC};
-use crate::peers::{Effect, Peer, PeerTable};
+use crate::peers::{Effect, Peer};
 use crate::sidecar::{HeldSidecar, Pause, SEED_BYTES, SidecarError, claim};
 use crate::wire::{self, Introduce, IntroduceAck, Message, Version};
 
@@ -587,11 +587,6 @@ impl ObserverHost {
         (self.clock)()
     }
 
-    /// The peer table, locked for one operation.
-    fn table(&self) -> MutexGuard<'_, PeerTable> {
-        self.rows.table()
-    }
-
     /// Hands an event to the observer loop, which is gone only once the run is.
     fn hand_to_loop(&self, event: ObserverEvent) {
         drop(self.to_loop.send(event));
@@ -701,7 +696,10 @@ impl Observation {
             }
         }
         let now_ms = self.host.now_ms();
-        Ok(self.host.table().peers(now_ms).cloned().collect())
+        Ok(self
+            .host
+            .rows
+            .read(|table| table.peers(now_ms).cloned().collect()))
     }
 
     /// Prints each payload as it arrives until the run is interrupted, ending in failure when the topic closes by itself.
@@ -978,7 +976,7 @@ mod tests {
     };
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
-    use crate::peers::{FailedContactKind, Status};
+    use crate::peers::{FailedContactKind, PeerTable, Status};
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
         RecordedEvent, answered_within, found_within, gossip_events_recorded_until,
@@ -1998,19 +1996,20 @@ mod tests {
             "listing of the neighbor by the observer",
             async || {
                 observer
-                    .table()
-                    .peers(wall_clock_ms())
-                    .any(|peer| peer.card == neighbor)
+                    .rows
+                    .read(|table| {
+                        table
+                            .peers(wall_clock_ms())
+                            .any(|peer| peer.card == neighbor)
+                    })
                     .then_some(())
             },
         )
         .await
         .unwrap_or_else(|missed| {
             let held: Vec<wire::PublicKey> = observer
-                .table()
-                .peers(wall_clock_ms())
-                .map(|peer| peer.card)
-                .collect();
+                .rows
+                .read(|table| table.peers(wall_clock_ms()).map(|peer| peer.card).collect());
             panic!("{missed}; it holds {held:?}")
         });
     }
@@ -3312,8 +3311,9 @@ mod tests {
         let awaited_holding = format!("member and observer both holding {awaited}");
         let settled_holdings = found_within(SAME_ROWS_WAIT, &awaited_holding, async || {
             let by_member = held_neighbor(&member.node.peers(), &member.endpoint).await;
-            let observer_peers: Vec<Peer> =
-                observer.table().peers(wall_clock_ms()).cloned().collect();
+            let observer_peers: Vec<Peer> = observer
+                .rows
+                .read(|table| table.peers(wall_clock_ms()).cloned().collect());
             let by_observer = held_neighbor(&observer_peers, &observer.endpoint).await;
             if settled(&by_member) && settled(&by_observer) {
                 return Some((by_member, by_observer));
@@ -3336,10 +3336,8 @@ mod tests {
             let member_holds_neighbor =
                 member.node.peers().iter().any(|peer| peer.card == neighbor);
             let held_by_observer: Vec<wire::PublicKey> = observer
-                .table()
-                .peers(wall_clock_ms())
-                .map(|peer| peer.card)
-                .collect();
+                .rows
+                .read(|table| table.peers(wall_clock_ms()).map(|peer| peer.card).collect());
             let observer_holds_neighbor = held_by_observer.contains(&neighbor);
             let observer_holds_member =
                 held_by_observer.contains(&wire::PublicKey::from(member.address.id));
