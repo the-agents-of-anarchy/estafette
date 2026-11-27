@@ -28,6 +28,7 @@ impl fmt::Display for ExistingDirectoryRefused {
 
 impl std::error::Error for ExistingDirectoryRefused {}
 
+/// Refuses the entry the facts describe unless it is a private directory of the user, naming the path.
 fn require_private_directory_of(
     user_id: u32,
     path: &Path,
@@ -201,14 +202,14 @@ fn read_state_file_opened_by(
 /// Fails when the staging path is taken or the file cannot be written, or with a `StateFileRefused` inside the error when the state file is a symbolic link or another user's; the staging file is then left unrenamed and removed.
 pub fn write_state_file(user_id: u32, path: &Path, staging: &Path, text: &str) -> io::Result<()> {
     let mut staged = create_new_owner_only_file(staging)?;
-    let outcome = fill_and_rename_over(&mut staged, user_id, staging, path, text);
+    let outcome = rename_over_after_writing(&mut staged, user_id, staging, path, text);
     if outcome.is_err() {
         drop(fs::remove_file(staging));
     }
     outcome
 }
 
-fn fill_and_rename_over(
+fn rename_over_after_writing(
     staged: &mut File,
     user_id: u32,
     staging: &Path,

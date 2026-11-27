@@ -14,7 +14,7 @@ const TEMPORARY_FILE_SUFFIX: &str = "tmp";
 /// Fails with the operating system's error when the file cannot be written or renamed, naming the temporary file when its removal fails too.
 pub fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
     let (file, temporary_path) = create_unique_temporary_file(path, OWNER_ONLY_FILE_MODE)?;
-    fill_and_rename(file, &temporary_path, path, contents).map_err(|failure| {
+    rename_over_after_syncing(file, &temporary_path, path, contents).map_err(|failure| {
         with_cleanup_outcome(
             failure,
             &temporary_path,
@@ -35,7 +35,7 @@ pub fn write_new_file_atomically(
     remove_temporary: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
     let (file, temporary_path) = create_unique_temporary_file(path, mode)?;
-    let linked = fill_and_link(file, &temporary_path, path, contents);
+    let linked = link_after_syncing(file, &temporary_path, path, contents);
     let removal = remove_temporary(&temporary_path);
     match linked {
         Ok(()) => removal.map_err(|cleanup| {
@@ -88,6 +88,7 @@ pub fn create_new_owner_only_file(path: &Path) -> io::Result<File> {
     create_new_file_with_mode(path, OWNER_ONLY_FILE_MODE)
 }
 
+/// Creates a new file of the given mode at the first free numbered temporary name beside the path.
 fn create_unique_temporary_file(path: &Path, mode: u32) -> io::Result<(File, PathBuf)> {
     for attempt in 0..=u32::MAX {
         let temporary_path =
@@ -101,7 +102,8 @@ fn create_unique_temporary_file(path: &Path, mode: u32) -> io::Result<(File, Pat
     Err(io::ErrorKind::AlreadyExists.into())
 }
 
-fn fill_and_rename(
+/// Writes the contents to the file, syncs it, and renames it over the path.
+fn rename_over_after_syncing(
     mut file: File,
     temporary_path: &Path,
     path: &Path,
@@ -112,7 +114,8 @@ fn fill_and_rename(
     fs::rename(temporary_path, path)
 }
 
-fn fill_and_link(
+/// Writes the contents to the file, syncs it, and links it to the path.
+fn link_after_syncing(
     mut file: File,
     temporary_path: &Path,
     path: &Path,

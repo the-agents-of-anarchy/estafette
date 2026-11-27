@@ -62,6 +62,7 @@ impl From<io::Error> for PrivateDirectoryFailure {
     }
 }
 
+/// Refuses the entry the facts describe unless it is a private directory of the user.
 fn refuse_unless_private(user_id: u32, facts: EntryFacts) -> Result<(), PrivateDirectoryFailure> {
     directory_finding(facts, user_id)
         .map_or(Ok(()), |found| Err(PrivateDirectoryFailure::Refused(found)))
@@ -88,6 +89,7 @@ pub fn create_private_directory(user_id: u32, path: &Path) -> Result<(), Private
     }
 }
 
+/// Sets the directory private through the descriptor the open gave, refusing an entry that is not the user's private directory or was swapped after the open.
 fn make_directory_private_opened_by(
     user_id: u32,
     path: &Path,
@@ -111,6 +113,7 @@ fn make_directory_private_opened_by(
     Ok(directory.set_permissions(Permissions::from_mode(OWNER_ONLY_DIRECTORY_MODE))?)
 }
 
+/// Sets the directory private by its name when the open was denied, refusing an entry that is not a private directory of the user.
 fn make_unreadable_directory_private_by_name(
     user_id: u32,
     path: &Path,
