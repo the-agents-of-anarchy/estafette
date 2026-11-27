@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use estafette::dirs::{OperatingSystemFilesystem, TraceDirectory};
+use estafette::dirs::{DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory};
 use estafette::trace::{RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceEffects};
 
 #[path = "../common/fresh_directory.rs"]
@@ -48,10 +48,11 @@ pub fn started(
     effects: &TraceEffects,
     bounds: TraceBounds,
 ) -> Arc<Trace> {
+    let filesystem = OperatingSystemFilesystem::of_this_process().unwrap();
     Arc::new(
         Trace::start(
             directory,
-            &OperatingSystemFilesystem::of_this_process().unwrap(),
+            &|path| filesystem.create_private_directory(path),
             RunId::from_random_bytes(RUN_BYTES),
             effects,
             bounds,

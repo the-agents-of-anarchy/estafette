@@ -1454,6 +1454,15 @@ mod tests {
         (root, directory)
     }
 
+    /// Creates a directory private to the user of this process on the operating system's files.
+    fn private_directory_creator_of_this_process()
+    -> impl Fn(&std::path::Path) -> std::io::Result<()> {
+        use crate::dirs::{DirectoryFilesystem, OperatingSystemFilesystem};
+
+        let filesystem = OperatingSystemFilesystem::of_this_process().unwrap();
+        move |path| filesystem.create_private_directory(path)
+    }
+
     /// The trace clocks reading the milliseconds since the Unix epoch of the machine's clock.
     fn machine_trace_clocks(
         wall_ms: impl Fn() -> u64 + Send + Sync + 'static,
@@ -1474,7 +1483,7 @@ mod tests {
         let live = Arc::new(
             Trace::start(
                 &directory,
-                &crate::dirs::OperatingSystemFilesystem::of_this_process().unwrap(),
+                &private_directory_creator_of_this_process(),
                 RunId::from_random_bytes(LIVE_RUN_BYTES),
                 &TraceEffects::of_the_operating_system(machine_trace_clocks(wall_clock_ms)),
                 TraceBounds::SPEC,
@@ -1533,7 +1542,7 @@ mod tests {
 
         let pruning = Trace::start(
             &directory,
-            &crate::dirs::OperatingSystemFilesystem::of_this_process().unwrap(),
+            &private_directory_creator_of_this_process(),
             RunId::from_random_bytes(PRUNING_RUN_BYTES),
             &TraceEffects::of_the_operating_system(machine_trace_clocks(move || {
                 just_before_the_next_snapshot_ms

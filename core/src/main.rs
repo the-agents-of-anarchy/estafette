@@ -27,8 +27,8 @@ use estafette::clock::{MonotonicClock, RuntimeClock};
 use estafette::config::{ConfigError, NetworkConfig};
 use estafette::crypto::GateKey;
 use estafette::dirs::{
-    CardsDirectoryOverride, Directories, DirectoriesError, OperatingSystemFilesystem,
-    ProcessUserUnknown, TraceDirectory,
+    CardsDirectoryOverride, Directories, DirectoriesError, DirectoryFilesystem,
+    OperatingSystemFilesystem, ProcessUserUnknown, TraceDirectory,
 };
 use estafette::errors::ExitStatus;
 use estafette::event::{
@@ -450,7 +450,7 @@ fn start_trace(
             fill_with_secure_random_bytes(&mut run_id);
             Trace::start(
                 &directory,
-                &filesystem,
+                &|path| filesystem.create_private_directory(path),
                 RunId::from_random_bytes(run_id),
                 trace_effects,
                 trace_bounds,

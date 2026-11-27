@@ -1,10 +1,12 @@
+use std::io;
+use std::path::Path;
 use std::time::Duration;
 
 use estafette_trace::{EstafetteRun, FileTrace, Program};
 use iroh::EndpointId;
 use serde_json::Value;
 
-use crate::dirs::{DirectoryFilesystem, TraceDirectory, TraceFiles};
+use crate::dirs::{TraceDirectory, TraceFiles};
 use crate::event::{Event, EventName, ShortId, TraceLineName};
 
 pub use estafette_trace::{
@@ -59,18 +61,12 @@ impl Trace {
     /// `TraceRefused` naming the path that could not be created, listed, removed or written.
     pub fn start(
         directory: &TraceDirectory,
-        filesystem: &impl DirectoryFilesystem,
+        create_private_directory: &dyn Fn(&Path) -> io::Result<()>,
         run: RunId,
         effects: &TraceEffects,
         bounds: TraceBounds,
     ) -> Result<Self, TraceRefused> {
-        let run = EstafetteRun::begin(
-            directory,
-            &|path| filesystem.create_private_directory(path),
-            run,
-            effects,
-            bounds,
-        )?;
+        let run = EstafetteRun::begin(directory, create_private_directory, run, effects, bounds)?;
         let events = run.open_events()?;
         let raw = run.open_raw()?;
         raw.write(
@@ -150,7 +146,7 @@ mod tests {
         HeldBackEnds, SMALL_QUEUE_LINES, effects_holding_back, small_queue_bounds, within_bound,
     };
     use super::*;
-    use crate::dirs::{OperatingSystemFilesystem, TraceFileKind};
+    use crate::dirs::{DirectoryFilesystem, OperatingSystemFilesystem, TraceFileKind};
     use crate::event::{ClaimFailure, InboxEvent, ProcessEvent};
     use crate::node::NodeError;
     use crate::seeded_draws::Draws;
@@ -209,6 +205,12 @@ mod tests {
         (root, directory)
     }
 
+    /// Creates a directory private to the user of this process on the operating system's files.
+    fn private_directory_creator_of_this_process() -> impl Fn(&Path) -> io::Result<()> {
+        let filesystem = OperatingSystemFilesystem::of_this_process().unwrap();
+        move |path| filesystem.create_private_directory(path)
+    }
+
     /// Clocks that always read `FROZEN_MONOTONIC_MS` and `wall_ms`.
     fn frozen_clocks(wall_ms: u64) -> TraceClocks {
         TraceClocks {
@@ -234,7 +236,7 @@ mod tests {
 
         let trace = Trace::start(
             &directory,
-            &OperatingSystemFilesystem::of_this_process().unwrap(),
+            &private_directory_creator_of_this_process(),
             RunId::from_random_bytes(RUN_BYTES),
             &TraceEffects::of_the_operating_system(frozen_clocks(LEAP_DAY_LAST_SECOND_MS)),
             TraceBounds::SPEC,
@@ -281,7 +283,7 @@ mod tests {
     fn started(directory: &TraceDirectory, wall_ms: u64, bounds: TraceBounds) -> Trace {
         Trace::start(
             directory,
-            &OperatingSystemFilesystem::of_this_process().unwrap(),
+            &private_directory_creator_of_this_process(),
             RunId::from_random_bytes(RUN_BYTES),
             &TraceEffects::of_the_operating_system(frozen_clocks(wall_ms)),
             bounds,
@@ -508,7 +510,7 @@ mod tests {
     ) -> Option<TraceRefused> {
         Trace::start(
             directory,
-            &OperatingSystemFilesystem::of_this_process().unwrap(),
+            &private_directory_creator_of_this_process(),
             RunId::from_random_bytes(RUN_BYTES),
             effects,
             bounds,
@@ -841,7 +843,7 @@ mod tests {
     ) -> Trace {
         Trace::start(
             directory,
-            &OperatingSystemFilesystem::of_this_process().unwrap(),
+            &private_directory_creator_of_this_process(),
             RunId::from_random_bytes(RUN_BYTES),
             effects,
             bounds,
@@ -1199,10 +1201,7 @@ mod tests {
         let (root, directory) = scratch_trace_directory("prune");
         let traces = directory.path();
         for private_directory in directory.private_directories() {
-            OperatingSystemFilesystem::of_this_process()
-                .unwrap()
-                .create_private_directory(&private_directory)
-                .unwrap();
+            private_directory_creator_of_this_process()(&private_directory).unwrap();
         }
         let fresh_at_the_bound = NOW_MS - SMALL_FRESHNESS_MS;
         let stale_by_one = NOW_MS - SMALL_FRESHNESS_MS - 1;

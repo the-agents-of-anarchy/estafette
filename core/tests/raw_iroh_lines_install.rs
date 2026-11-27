@@ -15,7 +15,7 @@ mod raw_iroh_lines_install {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use estafette::dirs::{OperatingSystemFilesystem, TraceDirectory};
+    use estafette::dirs::{DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory};
     use estafette::event::{EventName, TraceLineName};
     use estafette::trace::iroh_lines::install;
     use estafette::trace::{
@@ -52,10 +52,11 @@ mod raw_iroh_lines_install {
     fn observability_decision_7_install_sends_iroh_lines_to_the_raw_file_once_per_process_and_refuses_a_second_install_naming_no_debug()
      {
         let (root, directory) = scratch_trace_directory();
+        let filesystem = OperatingSystemFilesystem::of_this_process().unwrap();
         let trace = Arc::new(
             Trace::start(
                 &directory,
-                &OperatingSystemFilesystem::of_this_process().unwrap(),
+                &|path| filesystem.create_private_directory(path),
                 RunId::from_random_bytes(RUN_BYTES),
                 &TraceEffects::of_the_operating_system(TraceClocks {
                     monotonic_ms: Arc::new(|| 0),
