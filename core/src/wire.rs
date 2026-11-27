@@ -1053,6 +1053,45 @@ mod tests {
     const EMPTY_ADDR: [u8; 2] = [EMPTY_SEQUENCE, EMPTY_SEQUENCE];
     const FALSE_FLAG: u8 = 0;
     const TRUE_FLAG: u8 = 1;
+    const SOME_TAG: u8 = 1;
+    const IPV4_VARIANT_TAG: u8 = 0;
+    const PINNED_HANDLE: &str = "ab";
+    const PINNED_HANDLE_LENGTH: u8 = 2;
+    const PINNED_PUBLIC_BYTE: u8 = 0x09;
+    const PINNED_REASON: &str = "r";
+    const PINNED_RELAYS: [&str; 2] = ["r1", "r2"];
+    const PINNED_RELAY_COUNT: u8 = 2;
+    const PINNED_RELAY_LENGTH: u8 = 2;
+    const PINNED_DIRECT_COUNT: u8 = 2;
+    const FIRST_DIRECT_OCTETS: [u8; 4] = [10, 1, 2, 3];
+    const SECOND_DIRECT_OCTETS: [u8; 4] = [10, 4, 5, 6];
+    const FIRST_DIRECT_PORT: u8 = 7;
+    const SECOND_DIRECT_PORT: u8 = 8;
+
+    fn pinned_addr() -> Addr {
+        Addr::from_endpoint_report(
+            PINNED_RELAYS.map(str::to_owned),
+            [
+                SocketAddr::from((FIRST_DIRECT_OCTETS, u16::from(FIRST_DIRECT_PORT))),
+                SocketAddr::from((SECOND_DIRECT_OCTETS, u16::from(SECOND_DIRECT_PORT))),
+            ],
+        )
+    }
+
+    fn pinned_addr_bytes() -> Vec<u8> {
+        let relay = |numeral: u8| [PINNED_RELAY_LENGTH, b'r', numeral];
+        let direct =
+            |octets: [u8; 4], port: u8| [&[IPV4_VARIANT_TAG][..], &octets, &[port]].concat();
+        [
+            &[PINNED_RELAY_COUNT][..],
+            &relay(b'1'),
+            &relay(b'2'),
+            &[PINNED_DIRECT_COUNT],
+            &direct(FIRST_DIRECT_OCTETS, FIRST_DIRECT_PORT),
+            &direct(SECOND_DIRECT_OCTETS, SECOND_DIRECT_PORT),
+        ]
+        .concat()
+    }
 
     fn mac_of(byte: u8) -> Mac {
         Mac::from_bytes([byte; MAC_LEN])
@@ -1129,55 +1168,73 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_6_introduce_and_introduce_ack_encode_their_mac_as_bare_bytes() {
+    fn spec_3_6_introduce_and_introduce_ack_encode_their_fields_in_order_and_their_mac_as_bare_bytes()
+     {
         let introduce = Request::Introduce(Introduce {
             v: Version::CURRENT,
-            handle: None,
-            public: Vec::new(),
-            attached: false,
-            addr: Addr::from_endpoint_report([], []),
+            handle: Some(PINNED_HANDLE.to_owned()),
+            public: vec![PINNED_PUBLIC_BYTE],
+            attached: true,
+            addr: pinned_addr(),
             mac: mac_of(PINNED_MAC_BYTE),
         });
         let introduce_ack = Response::IntroduceAck(IntroduceAck {
             v: Version::CURRENT,
-            handle: None,
-            public: Vec::new(),
-            attached: false,
-            addr: Addr::from_endpoint_report([], []),
+            handle: Some(PINNED_HANDLE.to_owned()),
+            public: vec![PINNED_PUBLIC_BYTE],
+            attached: true,
+            addr: pinned_addr(),
             mac: mac_of(PINNED_MAC_BYTE),
         });
+        let addr = pinned_addr_bytes();
         let body = [
-            &[NONE_TAG, EMPTY_SEQUENCE, FALSE_FLAG][..],
-            &EMPTY_ADDR,
+            &[SOME_TAG, PINNED_HANDLE_LENGTH, b'a', b'b'][..],
+            &[1, PINNED_PUBLIC_BYTE, TRUE_FLAG],
+            &addr,
             &[PINNED_MAC_BYTE; MAC_LEN],
         ];
 
         assert_encodes_as(
             &introduce,
-            &[&[2, PROTOCOL_VERSION], body[0], body[1], body[2]],
+            &[&[2, PROTOCOL_VERSION], body[0], body[1], body[2], body[3]],
         );
         assert_encodes_as(
             &introduce_ack,
-            &[&[2, PROTOCOL_VERSION], body[0], body[1], body[2]],
+            &[&[2, PROTOCOL_VERSION], body[0], body[1], body[2], body[3]],
         );
     }
 
     #[test]
-    fn spec_3_6_message_ack_encodes_without_a_mac() {
-        let message_ack = Response::MessageAck(MessageAck {
+    fn spec_3_6_message_ack_encodes_its_fields_in_order_and_without_a_mac() {
+        let accepted = Response::MessageAck(MessageAck {
             v: Version::CURRENT,
             id: [PINNED_ID_BYTE; MESSAGE_ID_BYTES],
             accepted: true,
             attached: false,
             reason: None,
         });
+        let refused = Response::MessageAck(MessageAck {
+            v: Version::CURRENT,
+            id: [PINNED_ID_BYTE; MESSAGE_ID_BYTES],
+            accepted: false,
+            attached: true,
+            reason: Some(PINNED_REASON.to_owned()),
+        });
 
         assert_encodes_as(
-            &message_ack,
+            &accepted,
             &[
                 &[0, PROTOCOL_VERSION],
                 &[PINNED_ID_BYTE; MESSAGE_ID_BYTES],
                 &[TRUE_FLAG, FALSE_FLAG, NONE_TAG],
+            ],
+        );
+        assert_encodes_as(
+            &refused,
+            &[
+                &[0, PROTOCOL_VERSION],
+                &[PINNED_ID_BYTE; MESSAGE_ID_BYTES],
+                &[FALSE_FLAG, TRUE_FLAG, SOME_TAG, 1, b'r'],
             ],
         );
     }
