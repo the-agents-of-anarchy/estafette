@@ -86,7 +86,6 @@ impl fmt::Display for ProcessTableError {
 
 impl std::error::Error for ProcessTableError {}
 
-#[derive(Default)]
 struct ProcessImage {
     executable: String,
     arguments: Option<Vec<String>>,
