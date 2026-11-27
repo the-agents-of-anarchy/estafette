@@ -5254,8 +5254,21 @@ pub(super) mod tests {
     #[tokio::test]
     async fn spec_3_15_test_18_a_restarted_member_whose_introduce_comes_after_its_earlier_process_fell_silent_and_its_sender_exchange_messages_both_ways()
      {
-        a_restarted_second_and_the_first_list_each_other_and_exchange_both_ways("late-introduce")
-            .await;
+        a_restarted_second_and_the_first_list_each_other_and_exchange_both_ways(
+            "late-introduce",
+            RestartTopic::OfThreeMembers,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_18_a_member_restarted_into_a_topic_of_two_members_and_its_sender_list_each_other_online_and_exchange_messages_both_ways()
+     {
+        a_restarted_second_and_the_first_list_each_other_and_exchange_both_ways(
+            "two-member-restart",
+            RestartTopic::OfTwoMembers,
+        )
+        .await;
     }
 
     /// Starts the member of the plan on this runtime, its endpoint reaching the address, with its inbox and network file under the scratch index given.
@@ -5281,7 +5294,7 @@ pub(super) mod tests {
         .await
     }
 
-    /// The witness member that joins the first member before the restart, which takes the spec 3.14 observer wait, so the restarted member's Introduce reaches the first member after the earlier process's connections read as gone.
+    /// The witness member that joins the first member before the restart, making the restarted member's topic one of three members.
     async fn witness_joined(scratch: &Scratch, first_address: &iroh::EndpointAddr) -> Member {
         member_reaching(
             scratch,
@@ -5292,8 +5305,19 @@ pub(super) mod tests {
         .await
     }
 
-    /// Runs the second member, vanishes it, restarts it under its card once a witness has joined, and requires the first member and the restarted one to list each other online and deliver a message each way (spec 3.15 test 18).
-    async fn a_restarted_second_and_the_first_list_each_other_and_exchange_both_ways(tag: &str) {
+    /// The members of the topic the second member restarts into.
+    enum RestartTopic {
+        /// The first member and the restarted one alone.
+        OfTwoMembers,
+        /// Those two and a witness member that joined the first before the restart.
+        OfThreeMembers,
+    }
+
+    /// Runs the second member, vanishes it, restarts it under its card into the topic given, and requires the first member and the restarted one to list each other online and deliver a message each way (spec 3.15 test 18).
+    async fn a_restarted_second_and_the_first_list_each_other_and_exchange_both_ways(
+        tag: &str,
+        topic: RestartTopic,
+    ) {
         let scratch = Scratch::new(tag).await;
         let first_endpoint = bind(FIRST_SEED).await;
         let first_address = first_endpoint.endpoint().addr();
@@ -5326,7 +5350,10 @@ pub(super) mod tests {
         let first_session = first_session.vanish().await;
         let vanished = tokio::time::Instant::now();
         let vanished_ms = wall_clock_ms();
-        let _witness = witness_joined(&scratch, &first_address).await;
+        let _witness = match topic {
+            RestartTopic::OfTwoMembers => None,
+            RestartTopic::OfThreeMembers => Some(witness_joined(&scratch, &first_address).await),
+        };
         let restarted = member_reaching(
             &scratch,
             MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC).with_hosts(&[FIRST_SEED]),
