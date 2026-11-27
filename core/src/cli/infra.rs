@@ -376,7 +376,7 @@ async fn serve_host(
 fn parse_relay_domain(text: &str) -> Result<RelayDomain, RelayDomainRefused> {
     let written = format!("{RELAY_URL_SCHEME_PREFIX}{text}{RELAY_URL_ROOT_PATH}");
     let url: RelayUrl = written.parse().map_err(|_unparsed| RelayDomainRefused)?;
-    if url.host_str() != Some(text) {
+    if url.domain() != Some(text) {
         return Err(RelayDomainRefused);
     }
     let wire_url = wire::RelayUrl::try_from(written).map_err(|_over_limit| RelayDomainRefused)?;
@@ -2607,6 +2607,8 @@ mod tests {
             "relay-a.estafette.invalid:8443",
             "relay-a.estafette.invalid/path",
             "user@relay-a.estafette.invalid",
+            "192.0.2.7",
+            "[2001:db8::7]",
             "",
         ] {
             assert_eq!(
