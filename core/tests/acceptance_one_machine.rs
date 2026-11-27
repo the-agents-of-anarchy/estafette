@@ -2480,10 +2480,41 @@ mod observability_decision_6_on_one_machine {
 
     use serde_json::{Value, json};
 
+    use data_encoding::{BASE64, HEXLOWER};
+    use estafette::crypto::MAC_LEN;
+    use estafette::wire::{self, Payload};
+    use iroh_gossip::api::Event;
+
     use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, call_succeeded, online};
     use crate::member::LOOPBACK;
     use crate::scratch_machine::KeptFilesPolicy;
+    use crate::scripted_node::ScriptedNode;
+
+    /// The macs of the Presences the host's topic received, each as its bytes.
+    fn macs_of_presences_received_by(host: &ScriptedNode) -> BTreeSet<[u8; MAC_LEN]> {
+        host.events()
+            .iter()
+            .filter_map(|event| match event {
+                Event::Received(message) => wire::decode::<Payload>(&message.content).ok(),
+                _ => None,
+            })
+            .filter_map(|payload| match payload {
+                Payload::Presence(presence) => Some(*presence.mac.as_bytes()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A mac as an events file could write it: lowercase hexadecimal, base64, a JSON array of its bytes and a debug list of its bytes.
+    fn mac_in_every_form(mac: &[u8; MAC_LEN]) -> [String; 4] {
+        [
+            HEXLOWER.encode(mac),
+            BASE64.encode(mac),
+            serde_json::to_string(mac).unwrap(),
+            format!("{mac:?}"),
+        ]
+    }
 
     /// The body amy sends bob, planted so an events file that holds it is found to write a body (decision 6).
     const BODY_MARKER: &str = "body-marker-q7x2v9";
@@ -2639,6 +2670,14 @@ mod observability_decision_6_on_one_machine {
         let files = network.base_directory_files();
         let mut markers = planted_markers(&files);
         markers.extend(sockets.iter().cloned());
+        network.add_stand_in_host_to_the_configuration(&host);
+        let invitation =
+            network
+                .machine()
+                .run(&["network", "show-invitation", network.machine().network()]);
+        markers.insert(invitation.trim().to_owned());
+        let macs = macs_of_presences_received_by(&host);
+        markers.extend(macs.iter().flat_map(mac_in_every_form));
         let recorded: String = files
             .iter()
             .filter(|file| is_events_file(file))
@@ -2646,6 +2685,11 @@ mod observability_decision_6_on_one_machine {
             .collect();
 
         assert!(!sockets.is_empty(), "no inbox socket was found to plant");
+        assert!(!macs.is_empty(), "no Presence mac was found to plant");
+        assert!(
+            !invitation.trim().is_empty(),
+            "no invitation was found to plant"
+        );
         for name in EVENTS_THIS_EXCHANGE_RECORDS {
             assert!(recorded.contains(name), "no {name} event was recorded");
         }
