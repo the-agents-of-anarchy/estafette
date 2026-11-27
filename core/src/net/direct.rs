@@ -3378,37 +3378,78 @@ pub(crate) mod tests {
         (dialed.unwrap(), accepted.unwrap())
     }
 
+    /// How many times a test sets a scenario up again when iroh's selection of paths, read right after the setup, is not the one the scenario needs.
+    const RESTART_ATTEMPTS: usize = 16;
+
+    /// A connection of each protocol between two fresh nodes, with each end's register and the instant they opened.
+    struct ConnectionsOnSelectedPaths {
+        this_register: HeldConnections,
+        peer_register: HeldConnections,
+        opened_at: tokio::time::Instant,
+        _this_node: NodeEndpoint,
+        _peer_node: NodeEndpoint,
+        _open: Vec<(Connection, Connection)>,
+    }
+
+    /// One connection of each protocol opened between two fresh nodes, set up again until both ends report a selected path as each connection opens, failing by the setup's name after `RESTART_ATTEMPTS` attempts.
+    async fn connections_of_each_protocol_opened_on_selected_paths() -> ConnectionsOnSelectedPaths {
+        let expected_when_opened = vec![
+            (vec![true], vec![true]),
+            (vec![true, true], vec![true, true]),
+        ];
+        for _ in 0..RESTART_ATTEMPTS {
+            let this_register = unrecorded_register();
+            let peer_register = unrecorded_register();
+            let this_node = bind_node_holding(SERVER_SEED, this_register.clone()).await;
+            let peer_node = bind_node_holding(CLIENT_SEED, peer_register.clone()).await;
+            this_node.replace_address(peer_node.endpoint().addr());
+            let opened_at = tokio::time::Instant::now();
+            let mut reported_when_opened = Vec::new();
+            let mut open = Vec::new();
+            for alpn in [DIRECT_ALPN, GOSSIP_ALPN] {
+                open.push(dialed_and_accepted(&this_node, &peer_node, alpn).await);
+                reported_when_opened.push((
+                    selected_path_reported_by_each_held_of(&this_register, card_of(CLIENT_SEED)),
+                    selected_path_reported_by_each_held_of(&peer_register, card_of(SERVER_SEED)),
+                ));
+            }
+            if reported_when_opened == expected_when_opened {
+                return ConnectionsOnSelectedPaths {
+                    this_register,
+                    peer_register,
+                    opened_at,
+                    _this_node: this_node,
+                    _peer_node: peer_node,
+                    _open: open,
+                };
+            }
+        }
+        panic!(
+            "setup: iroh reported no selected path at an end as a connection opened in each of {RESTART_ATTEMPTS} attempts"
+        )
+    }
+
     #[tokio::test]
     async fn spec_3_8_a_healthy_connection_of_each_protocol_reports_a_selected_path_at_both_ends_when_it_opens_and_three_keep_alive_intervals_later()
      {
-        let this_register = unrecorded_register();
-        let peer_register = unrecorded_register();
-        let this_node = bind_node_holding(SERVER_SEED, this_register.clone()).await;
-        let peer_node = bind_node_holding(CLIENT_SEED, peer_register.clone()).await;
-        this_node.replace_address(peer_node.endpoint().addr());
-        let opened_at = tokio::time::Instant::now();
+        let opened = connections_of_each_protocol_opened_on_selected_paths().await;
+        let (this_register, peer_register) = (&opened.this_register, &opened.peer_register);
 
-        let mut reported_when_opened = Vec::new();
-        let mut open = Vec::new();
-        for alpn in [DIRECT_ALPN, GOSSIP_ALPN] {
-            open.push(dialed_and_accepted(&this_node, &peer_node, alpn).await);
-            reported_when_opened.push((
-                selected_path_reported_by_each_held_of(&this_register, card_of(CLIENT_SEED)),
-                selected_path_reported_by_each_held_of(&peer_register, card_of(SERVER_SEED)),
-            ));
-        }
-        let heard_since = opened_at.checked_add(SILENCE_OF_A_GONE_PROCESS).unwrap();
+        let heard_since = opened
+            .opened_at
+            .checked_add(SILENCE_OF_A_GONE_PROCESS)
+            .unwrap();
         let heard_through_three_keep_alive_intervals = timeout(SETTLED_WAIT, async {
-            while !(every_held_of_heard_since(&this_register, card_of(CLIENT_SEED), heard_since)
-                && every_held_of_heard_since(&peer_register, card_of(SERVER_SEED), heard_since))
+            while !(every_held_of_heard_since(this_register, card_of(CLIENT_SEED), heard_since)
+                && every_held_of_heard_since(peer_register, card_of(SERVER_SEED), heard_since))
             {
                 tokio::task::yield_now().await;
             }
         })
         .await;
         let reported_three_keep_alive_intervals_later = (
-            selected_path_reported_by_each_held_of(&this_register, card_of(CLIENT_SEED)),
-            selected_path_reported_by_each_held_of(&peer_register, card_of(SERVER_SEED)),
+            selected_path_reported_by_each_held_of(this_register, card_of(CLIENT_SEED)),
+            selected_path_reported_by_each_held_of(peer_register, card_of(SERVER_SEED)),
         );
 
         assert!(
@@ -3416,17 +3457,9 @@ pub(crate) mod tests {
             "the peers were not heard on every connection {SILENCE_OF_A_GONE_PROCESS:?} after it opened, within {SETTLED_WAIT:?}"
         );
         assert_eq!(
-            reported_when_opened,
-            vec![
-                (vec![true], vec![true]),
-                (vec![true, true], vec![true, true])
-            ]
-        );
-        assert_eq!(
             reported_three_keep_alive_intervals_later,
             (vec![true, true], vec![true, true])
         );
-        drop(open);
     }
 
     const HEARING_NOTED_WAIT: Duration = Duration::from_secs(5);
@@ -3567,30 +3600,63 @@ pub(crate) mod tests {
         );
     }
 
+    /// A server holding a stalled and a healthy connection of the client's card, each exchanged on, with the stalled one as the server accepted it.
+    struct StalledAndHealthyConnections {
+        rig: Rig,
+        stalled: Connection,
+        accepted_stalled: Connection,
+        healthy: Connection,
+    }
+
+    /// A fresh server and two connections of the client's card to it, set up again until iroh reports a selected path on both held connections, failing by the setup's name after `RESTART_ATTEMPTS` attempts.
+    async fn stalled_and_healthy_connections_on_selected_paths() -> StalledAndHealthyConnections {
+        for _ in 0..RESTART_ATTEMPTS {
+            let rig = rig().await;
+            let stalled = raw_connection(&rig).await;
+            raw_exchange(&stalled, &sealed_message_to_server(&keys()))
+                .await
+                .unwrap();
+            let accepted_stalled =
+                connections_held_open_from(&rig.link.server_node, card_of(CLIENT_SEED))
+                    .swap_remove(0);
+            let healthy = raw_connection(&rig).await;
+            raw_exchange(&healthy, &sealed_message_to_server(&keys()))
+                .await
+                .unwrap();
+            let reported = selected_path_reported_by_each_held_of(
+                &rig.link.server_node.held_connections(),
+                card_of(CLIENT_SEED),
+            );
+            if reported == [true, true] {
+                return StalledAndHealthyConnections {
+                    rig,
+                    stalled,
+                    accepted_stalled,
+                    healthy,
+                };
+            }
+        }
+        panic!(
+            "setup: iroh reported no selected path on a held connection of the card in each of {RESTART_ATTEMPTS} attempts"
+        )
+    }
+
     #[tokio::test]
     async fn spec_3_8_a_live_card_whose_other_connection_reports_a_selected_path_keeps_it_when_its_stalled_connection_closes()
      {
-        let rig = rig().await;
-        let stalled = raw_connection(&rig).await;
-        raw_exchange(&stalled, &sealed_message_to_server(&keys()))
-            .await
-            .unwrap();
-        let accepted_stalled =
-            connections_held_open_from(&rig.link.server_node, card_of(CLIENT_SEED)).swap_remove(0);
-        let healthy = raw_connection(&rig).await;
-        raw_exchange(&healthy, &sealed_message_to_server(&keys()))
-            .await
-            .unwrap();
+        let StalledAndHealthyConnections {
+            rig,
+            stalled,
+            accepted_stalled,
+            healthy,
+        } = stalled_and_healthy_connections_on_selected_paths().await;
         let register = rig.link.server_node.held_connections();
-        let reported_before =
-            selected_path_reported_by_each_held_of(&register, card_of(CLIENT_SEED));
 
         stall_the_held(&register, card_of(CLIENT_SEED), &accepted_stalled);
         register.close_silent_of(card_of(CLIENT_SEED));
         let stalled_closed = timeout(DIRECT_ANSWER_WAIT, stalled.closed()).await;
         let healthy_still_answers = still_answers(&healthy).await;
 
-        assert_eq!(reported_before, vec![true, true]);
         assert!(
             matches!(
                 &stalled_closed,
@@ -3926,19 +3992,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Asserts that no connection from the card reported a selected path once the Introduce's connection opened.
-    #[track_caller]
-    fn assert_the_gone_path_was_not_kept(reported_after_the_introduce: &[bool]) {
-        assert_eq!(
-            reported_after_the_introduce,
-            [false],
-            "iroh did not keep the gone process's path selected once the introduce's connection opened"
-        );
-    }
-
-    /// How many times a test sets the restart up again when iroh selected the restarted process's path before the test read it.
-    const RESTART_ATTEMPTS: usize = 16;
-
     /// The restart set up again over a fresh member until the Introduce's connection reports no selected path, failing by the setup's name after `RESTART_ATTEMPTS` attempts.
     async fn restarted_process_introduced_with_the_gone_path_unselected(
         transport: TransportRecord,
@@ -4250,23 +4303,60 @@ pub(crate) mod tests {
         }
     }
 
+    /// A restart whose Introduce the host answered while the member's probe of the restarted process ran, with the host that recorded the Introduce and that probe.
+    struct RestartProbedWhileAnswering {
+        restart: RestartedProcessIntroduced,
+        recording: RecordingHost,
+        probe: StartedProbe,
+    }
+
+    /// The restart set up again over a fresh member until the host read no selected path from the card's connections as it applied the Introduce, failing by the setup's name after `RESTART_ATTEMPTS` attempts.
+    async fn restart_probed_while_answering_with_the_gone_path_unselected()
+    -> RestartProbedWhileAnswering {
+        for _ in 0..RESTART_ATTEMPTS {
+            let recording = RecordingHost::with_card(card_of(SERVER_SEED));
+            let started_probe = Arc::new(Mutex::new(None));
+            let reported_before_the_probe_is_polled = Arc::new(Mutex::new(None));
+            let restart =
+                restarted_process_introduced_to_a_member(dropping_transport(), |member| {
+                    HostProbingTheIntroducerWhileAnswering {
+                        recording: recording.clone(),
+                        member,
+                        started_probe: Arc::clone(&started_probe),
+                        reported_before_the_probe_is_polled: Arc::clone(
+                            &reported_before_the_probe_is_polled,
+                        ),
+                    }
+                })
+                .await;
+            let reported = reported_before_the_probe_is_polled
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap();
+            let probe = started_probe.lock().unwrap().take().unwrap();
+            if reported == [false] {
+                return RestartProbedWhileAnswering {
+                    restart,
+                    recording,
+                    probe,
+                };
+            }
+            probe.abort();
+        }
+        panic!(
+            "setup: iroh selected the restarted process's path before the host read it while answering the introduce in each of {RESTART_ATTEMPTS} attempts"
+        )
+    }
+
     #[tokio::test]
     async fn spec_3_8_a_restarted_process_reads_its_introduce_ack_though_the_member_starts_a_request_to_it_while_answering()
      {
-        let recording = RecordingHost::with_card(card_of(SERVER_SEED));
-        let started_probe = Arc::new(Mutex::new(None));
-        let reported_before_the_probe_is_polled = Arc::new(Mutex::new(None));
-        let restart = restarted_process_introduced_to_a_member(dropping_transport(), |member| {
-            HostProbingTheIntroducerWhileAnswering {
-                recording: recording.clone(),
-                member,
-                started_probe: Arc::clone(&started_probe),
-                reported_before_the_probe_is_polled: Arc::clone(
-                    &reported_before_the_probe_is_polled,
-                ),
-            }
-        })
-        .await;
+        let RestartProbedWhileAnswering {
+            restart,
+            recording,
+            probe,
+        } = restart_probed_while_answering_with_the_gone_path_unselected().await;
         let ack = restart.introduced.unwrap_or_else(|failure| {
             panic!("the restarted process read no answer to its introduce: {failure:?}")
         });
@@ -4277,14 +4367,6 @@ pub(crate) mod tests {
                 ..own_introduction(false)
             }
         );
-        assert_the_gone_path_was_not_kept(
-            &reported_before_the_probe_is_polled
-                .lock()
-                .unwrap()
-                .take()
-                .unwrap(),
-        );
-        let probe = started_probe.lock().unwrap().take().unwrap();
 
         let probed = answered_within(
             DIRECT_ANSWER_WAIT,
