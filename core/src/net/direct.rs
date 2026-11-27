@@ -861,7 +861,7 @@ impl<H: DirectHost> ServerState<H> {
         let summary = RequestSummary::of(&request);
         let introduce_answer = (summary == RequestSummary::Introduce)
             .then(|| self.held.introduce_answers_in_flight.count(sender));
-        let outcome = async {
+        let answered = async {
             let response = self.answer(sender, arrived_on, request)?;
             let outcome = ServedOutcome::of(&response);
             let response_bytes =
@@ -870,13 +870,13 @@ impl<H: DirectHost> ServerState<H> {
             send.finish()?;
             Ok::<_, StreamEnd>(outcome)
         }
-        .await
-        .unwrap_or_else(ServedOutcome::Unanswered);
-        if matches!(outcome, ServedOutcome::Answered | ServedOutcome::Refused(_))
+        .await;
+        if answered.is_ok()
             && let Some(in_flight) = introduce_answer
         {
             tokio::spawn(in_flight.until_acknowledged(send.stopped()));
         }
+        let outcome = answered.unwrap_or_else(ServedOutcome::Unanswered);
         Ok((summary, outcome))
     }
 
