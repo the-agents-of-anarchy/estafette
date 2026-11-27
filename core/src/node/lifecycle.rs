@@ -305,6 +305,7 @@ mod tests {
     use crate::net::direct::tests::StandingClock;
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::net::endpoint::BoundEndpoint;
+    use crate::node::RelayProbe;
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
         FIRST_SEED, HOST_RELAY, HOST_SEED, MARKER_SEED, MOVED_HOST_RELAY, Member, MemberPlan,
@@ -313,7 +314,6 @@ mod tests {
         infrastructure_of, joined_and_asked_for_presence, keys, listed_within, saved_host,
         short_peer_id, start_pair, start_witnessed, status_within,
     };
-    use crate::node::rebind::RelayProbe;
     use crate::peers::{Peer, Status};
     use crate::sidecar;
     use crate::test_waits::{

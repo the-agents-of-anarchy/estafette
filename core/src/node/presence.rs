@@ -31,7 +31,6 @@ use super::payload_records::{
     broadcast_recording_outcome, named_admission_record, next_recorded_gossip_event,
 };
 use super::peer_rows::PeerRows;
-use super::rebind::{Rebinding, RelayProbe};
 use super::relay_loss::{RelayLossWatch, home_relays};
 use crate::clock::{MonotonicClock, MonotonicTime, deadline_reached, later_by};
 use crate::config::NetworkConfig;
@@ -57,6 +56,8 @@ use crate::wire::{
     self, Addr, Departure, Introduce, IntroduceAck, Message, Nonce, Payload, Presence,
     PresenceRequest, Unreachable, Version,
 };
+use rebind::Rebinding;
+pub use rebind::{RelayProbe, relay_answers};
 
 /// The longest a node goes without a snapshot of its counters, so a live process writes its events file at least this often (`spec/observability.md` decisions 9 and 13).
 const STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
@@ -287,12 +288,12 @@ pub fn serve<H: DirectHost + Clone>(
 }
 
 /// Each change of the endpoint's own address.
-pub(super) fn own_address_changes(endpoint: &BoundEndpoint) -> Changes<EndpointAddr> {
+fn own_address_changes(endpoint: &BoundEndpoint) -> Changes<EndpointAddr> {
     Box::pin(endpoint.watch_addr().stream_updates_only())
 }
 
 /// Each change of the endpoint's home relays and their connection status.
-pub(super) fn home_relay_changes(endpoint: &BoundEndpoint) -> Changes<Vec<RelayStatus>> {
+fn home_relay_changes(endpoint: &BoundEndpoint) -> Changes<Vec<RelayStatus>> {
     Box::pin(endpoint.home_relay_status().stream_updates_only())
 }
 
@@ -527,31 +528,31 @@ enum Wake {
 
 /// The one task that owns the topic and performs every effect of the events/actions table of spec 3.8, the rebind included.
 pub(super) struct PresenceLoop {
-    pub(super) state: Arc<NodeState>,
+    state: Arc<NodeState>,
     card_key: SecretKey,
-    pub(super) endpoint: NodeEndpoint,
-    pub(super) router: Router,
-    pub(super) gossip: Gossip,
-    pub(super) keys: NetworkKeys,
-    pub(super) owner: iroh::PublicKey,
-    pub(super) client: Arc<DirectClient>,
-    pub(super) topic: NetworkTopic,
+    endpoint: NodeEndpoint,
+    router: Router,
+    gossip: Gossip,
+    keys: NetworkKeys,
+    owner: iroh::PublicKey,
+    client: Arc<DirectClient>,
+    topic: NetworkTopic,
     from_hosts: mpsc::UnboundedReceiver<LoopEvent>,
     attached: Attached,
     inbox: InboxWatch,
-    pub(super) own_addresses: Changes<EndpointAddr>,
-    pub(super) relay_statuses: Changes<Vec<RelayStatus>>,
+    own_addresses: Changes<EndpointAddr>,
+    relay_statuses: Changes<Vec<RelayStatus>>,
     requested_handle: AnnouncedHandle,
     init: Init,
     announcer: Announcer,
     heard_requests: HeardPresenceRequests,
     request_seqs: RequestSeqs,
-    pub(super) relay_loss: RelayLossWatch,
-    pub(super) known_hosts: Arc<KnownHosts>,
-    pub(super) rebinding: Rebinding,
+    relay_loss: RelayLossWatch,
+    known_hosts: Arc<KnownHosts>,
+    rebinding: Rebinding,
     fill_probe_nonce: ProbeNonceSource,
-    pub(super) monotonic: MonotonicClock,
-    pub(super) report: RunRecord,
+    monotonic: MonotonicClock,
+    report: RunRecord,
     snapshot_due: Instant,
     #[cfg(test)]
     cause: Option<RequestCause>,
@@ -1119,6 +1120,9 @@ async fn rebind_cause_once_due(
         None => std::future::pending().await,
     }
 }
+
+#[path = "rebind.rs"]
+mod rebind;
 
 #[cfg(test)]
 #[path = "presence_events_tests.rs"]

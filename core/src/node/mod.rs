@@ -8,7 +8,6 @@ mod node_error;
 mod payload_records;
 mod peer_rows;
 mod presence;
-mod rebind;
 mod relay_loss;
 mod send;
 
@@ -34,6 +33,5 @@ pub(crate) use peer_rows::PeerRows;
 pub(crate) use presence::{
     Clock, ProbeNonceSource, presence_request, record_counters, serve, snapshot_due_after,
 };
-pub use presence::{Identity, Network, Node, NodeEffects};
-pub use rebind::{RelayProbe, relay_answers};
+pub use presence::{Identity, Network, Node, NodeEffects, RelayProbe, relay_answers};
 pub use send::{BroadcastResult, Delivery, Undelivered};
