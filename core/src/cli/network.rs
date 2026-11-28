@@ -32,6 +32,7 @@ const JOIN_ABOUT: &str = "Join a network from an invitation";
 const ADD_HOST_ABOUT: &str = "Add a host to a configured network";
 const SHOW_INVITATION_ABOUT: &str = "Print the invitation of a configured network";
 const CERTIFY_ABOUT: &str = "Sign a host's node id with the owner key";
+const CLEANUP_SEPARATOR: &str = "; ";
 
 fn create_long_about() -> String {
     format!(
@@ -189,6 +190,7 @@ enum Failure {
     Output(io::Error),
     NetworkAlreadyExists {
         network: Handle,
+        temporary_left_behind: Option<String>,
     },
     NetworkNotConfigured {
         network: Handle,
@@ -224,11 +226,19 @@ impl fmt::Display for Failure {
             Self::Config(source) => write!(formatter, "{source}"),
             Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
             Self::Output(source) => write!(formatter, "cannot write the result: {source}"),
-            Self::NetworkAlreadyExists { network } => write!(
-                formatter,
-                "network {} already has a configuration file or an owner key file here: choose another name, or remove both files if the network is abandoned",
-                network.as_str()
-            ),
+            Self::NetworkAlreadyExists {
+                network,
+                temporary_left_behind,
+            } => {
+                write!(
+                    formatter,
+                    "network {} already has a configuration file or an owner key file here: choose another name, or remove both files if the network is abandoned",
+                    network.as_str()
+                )?;
+                temporary_left_behind
+                    .iter()
+                    .try_for_each(|sentence| write!(formatter, "{CLEANUP_SEPARATOR}{sentence}"))
+            }
             Self::NetworkNotConfigured { network } => write!(
                 formatter,
                 "network {} has no configuration file here: create it, or join it with an invitation",
@@ -424,6 +434,7 @@ fn refuse_existing_file(
     if exists {
         Err(Failure::NetworkAlreadyExists {
             network: network.clone(),
+            temporary_left_behind: None,
         })
     } else {
         Ok(())
@@ -452,9 +463,18 @@ fn write_new_owner_only_file(
         .map_err(|source| match source.kind() {
             io::ErrorKind::AlreadyExists => Failure::NetworkAlreadyExists {
                 network: network.clone(),
+                temporary_left_behind: temporary_left_behind(&source),
             },
             _ => io_failure(path)(source),
         })
+}
+
+/// The sentence naming the temporary file a failed write left behind, when the write's error carries one after its own message.
+fn temporary_left_behind(source: &io::Error) -> Option<String> {
+    source
+        .to_string()
+        .split_once(CLEANUP_SEPARATOR)
+        .map(|(_failure, sentence)| sentence.to_owned())
 }
 
 fn io_failure(path: &Path) -> impl FnOnce(io::Error) -> Failure {

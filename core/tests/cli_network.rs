@@ -22,6 +22,7 @@ mod network_commands {
     use estafette::invite::{parse_invitation, render_host_line, render_invitation};
     use estafette::keys::{parse_public_key, parse_secret_key, render_public_key};
     use estafette::wire::{self, HostAddr, Invitation, RelayUrl, Version};
+    use estafette_private_entry::write_new_file_atomically;
     use iroh::{PublicKey, SecretKey, Signature};
 
     const BINARY: &str = env!("CARGO_BIN_EXE_estafette");
@@ -148,6 +149,81 @@ mod network_commands {
         assert_eq!(
             fs::read_to_string(machine.owner_key_file(NETWORK)).unwrap(),
             owner_key_before
+        );
+    }
+
+    const TEMPORARY_REMOVAL_REFUSAL: &str = "the removal was refused by the test";
+
+    struct OwnerKeyNameTakenAndTemporaryUnremovable {
+        filesystem: OperatingSystemFilesystem,
+    }
+
+    impl DirectoryFilesystem for OwnerKeyNameTakenAndTemporaryUnremovable {
+        fn create_private_directory(&self, path: &Path) -> io::Result<()> {
+            self.filesystem.create_private_directory(path)
+        }
+
+        fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
+            self.filesystem.owner_user_id(path)
+        }
+    }
+
+    impl NetworkFilesystem for OwnerKeyNameTakenAndTemporaryUnremovable {
+        fn path_exists(&self, path: &Path) -> io::Result<bool> {
+            self.filesystem.path_exists(path)
+        }
+
+        fn read_to_string(&self, path: &Path) -> io::Result<String> {
+            self.filesystem.read_to_string(path)
+        }
+
+        fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
+            fs::write(path, "")?;
+            write_new_file_atomically(path, contents, OWNER_ONLY_FILE_MODE, |_temporary| {
+                Err(io::Error::other(TEMPORARY_REMOVAL_REFUSAL))
+            })
+        }
+
+        fn replace_file(&self, path: &Path, contents: &str) -> io::Result<()> {
+            self.filesystem.replace_file(path, contents)
+        }
+
+        fn remove_file(&self, path: &Path) -> io::Result<()> {
+            self.filesystem.remove_file(path)
+        }
+    }
+
+    /// Spec 3.13: a create whose owner key name is taken and whose temporary file cannot be removed refuses as an existing network and names the temporary file left behind.
+    #[test]
+    fn spec_3_13_create_network_names_the_temporary_file_it_left_behind_when_the_owner_key_name_is_taken()
+     {
+        let machine = Machine::fresh("create-owner-key-taken");
+        let filesystem = OwnerKeyNameTakenAndTemporaryUnremovable {
+            filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
+        };
+        let temporary = machine
+            .owner_key_file(NETWORK)
+            .with_added_extension("0.tmp");
+
+        let refusal = run(
+            &NetworkCommand::Create {
+                network: NETWORK.parse().unwrap(),
+            },
+            &directories_of(&machine),
+            &filesystem,
+            |bytes| bytes.fill(5),
+            1_700_000_000,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            refusal.to_string(),
+            format!(
+                "network {NETWORK} already has a configuration file or an owner key file here: choose another name, or remove both files if the network is abandoned; {} was left behind: {TEMPORARY_REMOVAL_REFUSAL}",
+                temporary.display()
+            )
         );
     }
 
