@@ -193,7 +193,7 @@ impl NetworkTopic {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -227,9 +227,9 @@ mod tests {
     const ABSENT_BOOTSTRAP_SEED: u8 = 46;
     const OUTSIDER_SECRET: NetworkSecret = NetworkSecret::from_bytes([10; KEY_LEN]);
     const HOST_RELAY: &str = "https://relay.example/";
-    const EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY: u64 = 4000;
+    pub const EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY: u64 = 4000;
     const LAG_WAIT: Duration = Duration::from_secs(30);
-    const DELIVERY_WAIT: Duration = Duration::from_secs(60);
+    pub const DELIVERY_WAIT: Duration = Duration::from_secs(60);
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     const JOIN_TIMEOUT_SLACK: Duration = Duration::from_millis(1000);
     const JUST_UNDER: Duration = Duration::from_millis(1);
@@ -424,15 +424,15 @@ mod tests {
         }
     }
 
-    /// Waits until the member has received the data messages, failing with what was awaited and the bound when the bound runs out first.
-    async fn received_data_messages_within(
-        member: &Member,
+    /// Waits until the gossip instance has received the data messages, failing with what was awaited and the bound when the bound runs out first.
+    pub async fn received_data_messages_within(
+        gossip: &Gossip,
         data_messages: u64,
         within: Duration,
     ) -> Result<(), WaitMissed> {
         let awaited = format!("{data_messages} data messages received by the member");
         found_within(within, &awaited, async || {
-            (member.gossip.metrics().msgs_data_recv.get() >= data_messages).then_some(())
+            (gossip.metrics().msgs_data_recv.get() >= data_messages).then_some(())
         })
         .await
     }
@@ -742,9 +742,13 @@ mod tests {
                 .unwrap();
         }
 
-        received_data_messages_within(&first, EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY, DELIVERY_WAIT)
-            .await
-            .unwrap_or_else(|missed| missed.fail_the_test());
+        received_data_messages_within(
+            &first.gossip,
+            EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY,
+            DELIVERY_WAIT,
+        )
+        .await
+        .unwrap_or_else(|missed| missed.fail_the_test());
 
         let first_error = timeout(LAG_WAIT, async {
             loop {

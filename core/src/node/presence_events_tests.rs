@@ -14,17 +14,20 @@ use super::tests::{
     SECOND_EFFECTIVE_FIRST_HANDLE, SECOND_HANDLE, SECOND_HOST_RELAY, SECOND_HOST_SEED,
     SECOND_MARKER_SEED, SECOND_PUBLIC, SECOND_SEED, SPEC_ANNOUNCEMENT_MAX_AGE_MS,
     SPEC_INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE,
-    THIRD_PUBLIC, THIRD_SEED, WITNESS_HANDLE, WITNESS_PUBLIC, WITNESS_SEED, bind, card,
-    entry_meeting_within, infrastructure_of, keys, message_to, noting_neighbors, relay_url,
-    settable_clock, settled_direct_answers, short_peer_id, spawn_member, start_members,
-    start_members_reaching, start_pair, start_witnessed,
+    THIRD_PUBLIC, THIRD_SEED, WITNESS_HANDLE, WITNESS_PUBLIC, WITNESS_SEED, Witness, bind, card,
+    entry_meeting_within, frozen_clock, idle_presence_loop, infrastructure_of, keys, message_to,
+    noting_neighbors, relay_url, settable_clock, settled_direct_answers, short_peer_id,
+    spawn_member, start_members, start_members_reaching, start_pair, start_witnessed,
 };
 use crate::clock::{MILLIS_PER_SECOND, RuntimeClock};
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{EventFields, RunRecord};
-use crate::net::direct::tests::{test_salt, unrecorded_register};
+use crate::net::direct::tests::{StandingClock, test_salt, unrecorded_register};
 use crate::net::direct::{ClientTimeouts, DirectClient, HeldConnections};
 use crate::net::endpoint::{BoundEndpoint, DIRECT_ALPN, LocationHash, TransportRecord};
+use crate::net::gossip::tests::{
+    DELIVERY_WAIT, EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY, received_data_messages_within,
+};
 use crate::net::gossip::{GossipEvent, NetworkTopic};
 use crate::node::addresses::wire_addr;
 use crate::node::direct_requests::DirectContact;
@@ -33,7 +36,7 @@ use crate::payload::{
 };
 use crate::test_waits::{
     RecordedEvent, next_recorded, next_recorded_among, next_recorded_meeting, next_recorded_within,
-    recorded_events, secret_key, wall_clock_ms,
+    recorded_events, recorded_until, secret_key, wall_clock_ms,
 };
 use crate::wire::{
     Addr, Departure, Introduce, IntroduceAck, Payload, Presence, PresenceRequest, ProbeAck,
@@ -1227,6 +1230,87 @@ async fn observability_decision_9_an_introduce_to_a_card_that_cannot_be_reached_
             ("error", Value::from("unreachable")),
         ]
     );
+    drop(scratch);
+}
+
+const TOPIC_FAILED: &str = "gossip.topic_failed";
+const TOPIC_JOINED: &str = "gossip.topic_joined";
+const REBINDING: &str = "transport.rebinding";
+const AFTER_THE_LAG_HANDLE: &str = "after-lag";
+const FAILURE_RECORDED_WITHIN: Duration = Duration::from_secs(60);
+const ACCEPTED_AFTER_THE_FAILURE_WITHIN: Duration = Duration::from_secs(30);
+
+/// The Presences of the marker card, each newer than the last and all older than the clock's reading, that no subscription of one gossip instance can hold unread.
+async fn broadcast_more_presences_than_the_subscription_holds(witness: &Witness) {
+    let first_seq = FROZEN_CLOCK_MS - EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY;
+    for seq in first_seq..FROZEN_CLOCK_MS {
+        witness
+            .broadcast_as(MARKER_SEED, presence_of(MARKER_SEED, MARKER_HANDLE, seq))
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn spec_3_8_a_member_whose_topic_lagged_records_the_failure_and_goes_on_accepting_payloads_with_no_rejoin_and_no_rebind()
+ {
+    let scratch = Scratch::new("lagged-topic").await;
+    let (report, mut recorded) = recorded_events();
+    let held_loop = idle_presence_loop(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+            .with_clock(frozen_clock(FROZEN_CLOCK_MS))
+            .with_monotonic(StandingClock::standing_now().monotonic())
+            .with_report(report),
+    )
+    .await;
+    let witness = Witness::joined_through(WITNESS_SEED, None, held_loop.endpoint.endpoint()).await;
+    broadcast_more_presences_than_the_subscription_holds(&witness).await;
+    received_data_messages_within(
+        &held_loop.gossip,
+        EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY,
+        DELIVERY_WAIT,
+    )
+    .await
+    .unwrap_or_else(|missed| missed.fail_the_test());
+
+    let running = tokio::spawn(held_loop.run());
+    recorded_until(
+        &mut recorded,
+        TOPIC_FAILED,
+        |_fields| true,
+        FAILURE_RECORDED_WITHIN,
+    )
+    .await;
+    witness
+        .broadcast_as(
+            SECOND_MARKER_SEED,
+            presence_of(SECOND_MARKER_SEED, AFTER_THE_LAG_HANDLE, FROZEN_CLOCK_MS),
+        )
+        .await;
+    let (between_the_failure_and_the_marker, accepted_marker) = recorded_until(
+        &mut recorded,
+        ACCEPTED,
+        |fields| fields.contains(&("peer", short_peer_id(SECOND_MARKER_SEED))),
+        ACCEPTED_AFTER_THE_FAILURE_WITHIN,
+    )
+    .await;
+
+    assert_eq!(
+        accepted_marker,
+        [
+            ("kind", Value::from("presence")),
+            ("peer", short_peer_id(SECOND_MARKER_SEED)),
+            ("handle", Value::from(AFTER_THE_LAG_HANDLE)),
+            ("seq", Value::from(FROZEN_CLOCK_MS)),
+        ]
+    );
+    let rejoin_or_rebind: Vec<_> = between_the_failure_and_the_marker
+        .iter()
+        .map(|(name, _fields)| *name)
+        .filter(|name| [TOPIC_JOINED, REBINDING].contains(name))
+        .collect();
+    assert_eq!(rejoin_or_rebind, Vec::<&str>::new());
+    running.abort();
     drop(scratch);
 }
 
