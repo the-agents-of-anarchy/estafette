@@ -471,7 +471,7 @@ struct NetworkSetup {
 fn load_network_setup(
     directories: &Directories,
     network: &Handle,
-    filesystem: &(impl FileTextReader + Sync),
+    filesystem: &impl FileTextReader,
 ) -> Result<NetworkSetup, Failure> {
     let path = directories.network_config_file(network);
     let config =
