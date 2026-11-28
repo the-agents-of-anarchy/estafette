@@ -459,7 +459,6 @@ mod tests {
     use crate::clock::{MonotonicClock, MonotonicTime, RuntimeClock, later_by};
     use crate::config::{Host, HostOrigin};
     use crate::event::{Event, EventFields, RunRecord, TransportEvent};
-    use crate::keys::render_public_key;
     use crate::net::direct::tests::{
         INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, IROH_DOCUMENTED_CLOSE_LATENCY, PAYLOAD_ACCEPTED,
         SPEC_DEAF_TIMEOUT, SPEC_STATE_SNAPSHOT_INTERVAL, START_MOMENT, STATE_COUNTERS,
@@ -1150,10 +1149,12 @@ mod tests {
         drop(scratch);
     }
 
-    const NOT_A_NODE_ID: &str = "not a node id";
+    const NOT_A_NODE_ID_BYTE: u8 = 2;
+    const NOT_A_NODE_ID: crate::wire::PublicKey =
+        crate::wire::PublicKey::from_bytes([NOT_A_NODE_ID_BYTE; crate::crypto::KEY_LEN]);
     const NOT_A_RELAY_URL: &str = "not a relay url";
 
-    fn configured_host_of(id: String, relay: &str) -> Host {
+    fn configured_host_of(id: crate::wire::PublicKey, relay: &str) -> Host {
         Host {
             id,
             relay: relay.to_owned(),
@@ -1172,11 +1173,11 @@ mod tests {
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(record),
         )
         .await;
-        let live_id = render_public_key(&secret_key(LIVE_HOST_SEED).public());
+        let live_id = crate::wire::PublicKey::from(secret_key(LIVE_HOST_SEED).public());
         presence_loop.known_hosts = Arc::new(KnownHosts::new(
             config_with_hosts(vec![
-                configured_host_of(NOT_A_NODE_ID.to_owned(), LIVE_RELAY),
-                configured_host_of(live_id.clone(), LIVE_RELAY),
+                configured_host_of(NOT_A_NODE_ID, LIVE_RELAY),
+                configured_host_of(live_id, LIVE_RELAY),
                 configured_host_of(live_id, NOT_A_RELAY_URL),
             ]),
             std::path::PathBuf::new(),

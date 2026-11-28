@@ -7,8 +7,7 @@ use clap::Subcommand;
 use iroh::PublicKey;
 
 use crate::config::{
-    AcceptedValue, ConfigError, HOST_ID_FIELD, Host, HostOrigin, NetworkConfig, OWNER_FIELD,
-    SECRET_FIELD,
+    AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, OWNER_FIELD, SECRET_FIELD,
 };
 use crate::crypto::{
     HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, render_host_certificate, sign_host_certificate,
@@ -485,7 +484,7 @@ fn load_configured_network(
 
 fn configured_host(address: &HostAddr) -> Result<Host, Failure> {
     Ok(Host {
-        id: render_public_key(&host_public_key(address)?),
+        id: wire::PublicKey::from(host_public_key(address)?),
         relay: address.relay.as_str().to_owned(),
         ts: None,
         origin: HostOrigin::Configured,
@@ -532,11 +531,10 @@ fn host_address_of(
     index_in_hosts: usize,
     config_file: &Path,
 ) -> Result<HostAddr, Failure> {
-    let id = parse_public_key(&host.id).map_err(stored_key(HOST_ID_FIELD))?;
     let relay = host.wire_relay(index_in_hosts, config_file)?;
     Ok(HostAddr {
         v: Version::CURRENT,
-        id: wire::PublicKey::from(id),
+        id: host.id,
         relay,
     })
 }

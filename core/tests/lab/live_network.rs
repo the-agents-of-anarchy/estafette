@@ -124,7 +124,7 @@ impl LiveNetwork {
             hosts: hosts
                 .iter()
                 .map(|host| Host {
-                    id: HEXLOWER.encode(host.id.as_bytes()),
+                    id: host.id,
                     relay: host.relay.as_str().to_owned(),
                     ts: None,
                     origin: HostOrigin::Configured,

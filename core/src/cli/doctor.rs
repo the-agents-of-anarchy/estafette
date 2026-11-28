@@ -462,7 +462,7 @@ mod tests {
 
     fn configured_host(seed: u8, relay: &str) -> Host {
         Host {
-            id: render_public_key(&secret_key(seed).public()),
+            id: crate::wire::PublicKey::from(secret_key(seed).public()),
             relay: relay.to_owned(),
             ts: None,
             origin: HostOrigin::Configured,

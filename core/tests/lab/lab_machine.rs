@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use data_encoding::HEXLOWER;
 use estafette::config::{Host, NetworkConfig};
 use estafette::dirs::TraceDirectory;
 
@@ -120,7 +121,10 @@ impl LabMachine {
             || {},
             |_watch| {
                 let hosts = NetworkConfig::load(&config_file).unwrap().hosts;
-                hosts.iter().any(|host| host.id == id).then_some(hosts)
+                hosts
+                    .iter()
+                    .any(|host| HEXLOWER.encode(host.id.as_bytes()) == id)
+                    .then_some(hosts)
             },
         );
         match named {

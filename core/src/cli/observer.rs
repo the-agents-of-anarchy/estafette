@@ -1111,7 +1111,7 @@ mod tests {
                 hosts: host_seeds
                     .iter()
                     .map(|&seed| Host {
-                        id: render_public_key(&secret_key(seed).public()),
+                        id: crate::wire::PublicKey::from(secret_key(seed).public()),
                         relay: UNREACHABLE_RELAY.to_owned(),
                         ts: None,
                         origin: HostOrigin::Configured,
@@ -1296,7 +1296,7 @@ mod tests {
             .into_iter()
             .filter(|&seed| seed != plan.seed)
             .map(|seed| Host {
-                id: render_public_key(&secret_key(seed).public()),
+                id: crate::wire::PublicKey::from(secret_key(seed).public()),
                 relay: UNREACHABLE_RELAY.to_owned(),
                 ts: None,
                 origin: HostOrigin::Configured,

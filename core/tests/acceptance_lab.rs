@@ -280,7 +280,9 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
 
     /// Whether the hosts include the key's node id.
     fn names(hosts: &[Host], key: &SecretKey) -> bool {
-        hosts.iter().any(|host| host.id == id_text(key))
+        hosts
+            .iter()
+            .any(|host| host.id.as_bytes() == key.public().as_bytes())
     }
 
     /// Spec 3.15 test 27: a member saves no host from a record whose signature is by a key other than its `host`.
@@ -480,7 +482,9 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         scene.forger.broadcast(replayed_at_the_accepted_ts);
         let hosts = scene.hosts_after_marker(&key(REPLAY_MARKER_SEED), &host, REPLAYS);
 
-        let saved = hosts.iter().find(|saved| saved.id == id_text(&host));
+        let saved = hosts
+            .iter()
+            .find(|saved| saved.id.as_bytes() == host.public().as_bytes());
         assert_eq!(
             saved.map(|saved| (saved.relay.as_str(), saved.ts)),
             Some((scene.network.host_relay(), Some(accepted_ts))),
@@ -505,7 +509,9 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             .machine()
             .hosts_once_named(&id_text(&host), ACCEPTANCE_WAIT);
 
-        let saved = hosts.iter().find(|saved| saved.id == id_text(&host));
+        let saved = hosts
+            .iter()
+            .find(|saved| saved.id.as_bytes() == host.public().as_bytes());
         assert_eq!(
             saved.map(|saved| (saved.relay.as_str(), saved.ts)),
             Some((scene.network.host_relay(), Some(ts))),
@@ -529,7 +535,9 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             .machine()
             .hosts_once_named(&id_text(&host), ACCEPTANCE_WAIT);
 
-        let saved = hosts.iter().find(|saved| saved.id == id_text(&host));
+        let saved = hosts
+            .iter()
+            .find(|saved| saved.id.as_bytes() == host.public().as_bytes());
         assert_eq!(
             saved.map(|saved| (saved.relay.as_str(), saved.ts)),
             Some((scene.network.host_relay(), Some(ts))),

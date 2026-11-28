@@ -11,7 +11,7 @@ use super::payload_records::admission_record;
 use crate::clock::MILLIS_PER_SECOND;
 use crate::config::{ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
 use crate::event::{ConfigurationRewrite, Event, GossipEvent, ShortId};
-use crate::keys::{parse_public_key, render_key_bytes};
+use crate::keys::render_key_bytes;
 use crate::net::endpoint::NodeEndpoint;
 use crate::payload::{DescribedPayload, PayloadDropRule, ValidInfrastructure};
 use crate::wire;
@@ -32,7 +32,7 @@ pub fn known_host_addresses(config: &NetworkConfig) -> Result<Vec<KnownHostAddre
         .iter()
         .map(|host| {
             known_host_address(host).map_err(|_unparsed| NodeError::KnownHostInvalid {
-                id: host.id.clone(),
+                id: render_key_bytes(host.id.as_bytes()),
             })
         })
         .collect()
@@ -55,7 +55,7 @@ pub struct SkippedHost {
 /// The host's node id and relay, or the part that does not parse.
 fn known_host_address(host: &Host) -> Result<KnownHostAddress, HostUnparsed> {
     Ok(KnownHostAddress {
-        id: parse_public_key(&host.id).map_err(|_unparsed| HostUnparsed::Id)?,
+        id: EndpointId::from_bytes(host.id.as_bytes()).map_err(|_unparsed| HostUnparsed::Id)?,
         relay: host
             .relay
             .parse()
@@ -226,7 +226,7 @@ impl HeldHosts {
     ) -> Result<RecordVerdict, PayloadDropRule> {
         let record = valid.record();
         refuse_past_future_bound(record.ts, now_ms)?;
-        let id = render_key_bytes(record.host.as_bytes());
+        let id = record.host;
         let verdict = match self.config.hosts.iter_mut().find(|host| host.id == id) {
             None => {
                 self.config
@@ -263,7 +263,7 @@ const fn refuse_past_future_bound(record_ts: u64, now_ms: u64) -> Result<(), Pay
 }
 
 /// The host a record from a host never known before adds, heard now.
-fn learned_host(id: String, relay: &str, ts: u64, now_ms: u64) -> Host {
+fn learned_host(id: wire::PublicKey, relay: &str, ts: u64, now_ms: u64) -> Host {
     Host {
         id,
         relay: relay.to_owned(),
@@ -309,7 +309,9 @@ mod tests {
     use crate::test_waits::secret_key;
 
     const UNHELD_RELAY: &str = "https://relay-unheld.estafette.invalid/";
-    const NOT_A_NODE_ID: &str = "not a node id";
+    const NOT_A_NODE_ID_BYTE: u8 = 2;
+    const NOT_A_NODE_ID: wire::PublicKey =
+        wire::PublicKey::from_bytes([NOT_A_NODE_ID_BYTE; crate::crypto::KEY_LEN]);
     const NOT_A_RELAY_URL: &str = "not a relay url";
     const SPEC_REFUSAL_ACCEPTED: &str =
         "64 lowercase hexadecimal characters and a relay of an https URL of at most 128 bytes";
@@ -368,7 +370,7 @@ mod tests {
     fn spec_3_8_the_known_host_with_a_relay_is_found_by_that_relay_alone() {
         let known_hosts = KnownHosts::new(
             config_with_hosts(vec![Host {
-                id: crate::keys::render_public_key(&secret_key(HOST_SEED).public()),
+                id: wire::PublicKey::from(secret_key(HOST_SEED).public()),
                 relay: HOST_RELAY.to_owned(),
                 ts: None,
                 origin: HostOrigin::Configured,
@@ -387,15 +389,15 @@ mod tests {
     #[test]
     fn spec_3_8_a_configured_host_that_does_not_parse_refuses_the_start_with_one_text_for_either_part()
      {
-        let live_id = crate::keys::render_public_key(&secret_key(HOST_SEED).public());
+        let live_id = wire::PublicKey::from(secret_key(HOST_SEED).public());
         let unparsed_id = Host {
-            id: NOT_A_NODE_ID.to_owned(),
+            id: NOT_A_NODE_ID,
             relay: HOST_RELAY.to_owned(),
             ts: None,
             origin: HostOrigin::Configured,
         };
         let unparsed_relay = Host {
-            id: live_id.clone(),
+            id: live_id,
             relay: NOT_A_RELAY_URL.to_owned(),
             ts: None,
             origin: HostOrigin::Configured,
@@ -414,8 +416,14 @@ mod tests {
         assert_eq!(
             refusals,
             [
-                format!("known host {NOT_A_NODE_ID} needs a node id of {SPEC_REFUSAL_ACCEPTED}"),
-                format!("known host {live_id} needs a node id of {SPEC_REFUSAL_ACCEPTED}"),
+                format!(
+                    "known host {} needs a node id of {SPEC_REFUSAL_ACCEPTED}",
+                    render_key_bytes(NOT_A_NODE_ID.as_bytes())
+                ),
+                format!(
+                    "known host {} needs a node id of {SPEC_REFUSAL_ACCEPTED}",
+                    render_key_bytes(live_id.as_bytes())
+                ),
             ]
         );
     }
@@ -440,18 +448,16 @@ mod tests {
             )
             .await;
 
-        let held: Vec<String> = known_hosts
+        let held: Vec<wire::PublicKey> = known_hosts
             .held()
             .config
             .hosts
             .iter()
-            .map(|host| host.id.clone())
+            .map(|host| host.id)
             .collect();
         assert_eq!(
             held,
-            [crate::keys::render_public_key(
-                &secret_key(HOST_SEED).public()
-            )]
+            [wire::PublicKey::from(secret_key(HOST_SEED).public())]
         );
     }
 

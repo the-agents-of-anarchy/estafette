@@ -298,7 +298,7 @@ mod network_commands {
         let mut config = NetworkConfig::load(&config_file).unwrap();
         let operator_host = host_address(7, OPERATOR_RELAY);
         config.hosts.push(Host {
-            id: render_public_key(&PublicKey::from_bytes(operator_host.id.as_bytes()).unwrap()),
+            id: operator_host.id,
             relay: LEARNED_RELAY.to_owned(),
             ts: Some(LEARNED_AT_MILLIS),
             origin: HostOrigin::Learned {
@@ -354,7 +354,12 @@ mod network_commands {
             .hosts;
         let written: Vec<(String, String)> = hosts
             .into_iter()
-            .map(|host| (host.id, host.relay))
+            .map(|host| {
+                (
+                    render_public_key(&PublicKey::from_bytes(host.id.as_bytes()).unwrap()),
+                    host.relay,
+                )
+            })
             .collect();
         let mut expected = vec![
             (

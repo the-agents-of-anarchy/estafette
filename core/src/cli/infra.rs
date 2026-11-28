@@ -1070,7 +1070,7 @@ mod tests {
         }
 
         fn saved_host(&self, host_seed: u8) -> Option<Host> {
-            let id = render_public_key(&secret_key(host_seed).public());
+            let id = crate::wire::PublicKey::from(secret_key(host_seed).public());
             NetworkConfig::load(&self.config_file())
                 .unwrap()
                 .hosts
@@ -2174,7 +2174,7 @@ mod tests {
 
     fn configured_host(seed: u8, relay: &str) -> Host {
         Host {
-            id: render_public_key(&secret_key(seed).public()),
+            id: crate::wire::PublicKey::from(secret_key(seed).public()),
             relay: relay.to_owned(),
             ts: None,
             origin: HostOrigin::Configured,

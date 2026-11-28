@@ -1417,7 +1417,7 @@ pub(super) mod tests {
 
     fn configured_host(seed: u8, relay: &str) -> Host {
         Host {
-            id: render_public_key(&secret_key(seed).public()),
+            id: crate::wire::PublicKey::from(secret_key(seed).public()),
             relay: relay.to_owned(),
             ts: None,
             origin: HostOrigin::Configured,
@@ -2310,7 +2310,7 @@ pub(super) mod tests {
         config_path: &std::path::Path,
         host_seed: u8,
     ) -> Option<Host> {
-        let id = render_public_key(&secret_key(host_seed).public());
+        let id = crate::wire::PublicKey::from(secret_key(host_seed).public());
         NetworkConfig::load(config_path)
             .ok()?
             .hosts

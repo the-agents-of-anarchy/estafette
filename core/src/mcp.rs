@@ -1271,8 +1271,8 @@ mod tests {
             Self {
                 process_id,
                 config: network_config(vec![Host {
-                    id: render_public_key(
-                        &SecretKey::from_bytes(&[other_seed; KEY_BYTES]).public(),
+                    id: crate::wire::PublicKey::from(
+                        SecretKey::from_bytes(&[other_seed; KEY_BYTES]).public(),
                     ),
                     relay: UNREACHABLE_RELAY.to_owned(),
                     ts: None,
@@ -2263,7 +2263,7 @@ mod tests {
         machine.create_card("amy-card", "amy", AMY_SEED);
         let bound_with = Arc::new(std::sync::Mutex::new(Vec::new()));
         let host_with_relay = |seed: u8, relay: &str| Host {
-            id: render_public_key(&SecretKey::from_bytes(&[seed; KEY_BYTES]).public()),
+            id: crate::wire::PublicKey::from(SecretKey::from_bytes(&[seed; KEY_BYTES]).public()),
             relay: relay.to_owned(),
             ts: None,
             origin: HostOrigin::Configured,

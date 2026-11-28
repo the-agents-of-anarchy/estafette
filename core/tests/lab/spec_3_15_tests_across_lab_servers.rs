@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use data_encoding::HEXLOWER;
 use estafette::config::{Host, HostOrigin, NetworkConfig};
 use estafette::keys::render_public_key;
 use estafette::wire::HostAddr;
@@ -447,7 +448,7 @@ fn hosts_first_read(
                     *read = member
                         .configured_hosts()
                         .into_iter()
-                        .find(|host| host.id == id)
+                        .find(|host| HEXLOWER.encode(host.id.as_bytes()) == id)
                         .map(|host| (host, Instant::now()));
                 }
             }
@@ -491,7 +492,7 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
             member
                 .configured_hosts()
                 .iter()
-                .any(|host| host.id == added_id)
+                .any(|host| HEXLOWER.encode(host.id.as_bytes()) == added_id)
         })
         .collect();
 
@@ -808,7 +809,7 @@ fn spec_3_15_test_25_with_one_host_dead_a_member_invited_through_the_live_host_l
     let configured: Vec<String> = newcomer
         .configured_hosts()
         .into_iter()
-        .map(|host| host.id)
+        .map(|host| HEXLOWER.encode(host.id.as_bytes()))
         .collect();
     assert_eq!(configured, [live_host_id(&network)]);
     for (handle, at_ms) in listed_at_ms {
@@ -881,13 +882,13 @@ fn spec_3_15_test_26_a_member_restarted_after_its_configured_host_died_joins_thr
     assert!(
         configured_at_restart
             .iter()
-            .any(|host| host.id == live_id && is_learned(host)),
+            .any(|host| HEXLOWER.encode(host.id.as_bytes()) == live_id && is_learned(host)),
         "{configured_at_restart:?}"
     );
     assert!(
         configured_at_restart
             .iter()
-            .any(|host| host.id == doomed_id && !is_learned(host)),
+            .any(|host| HEXLOWER.encode(host.id.as_bytes()) == doomed_id && !is_learned(host)),
         "{configured_at_restart:?}"
     );
 }

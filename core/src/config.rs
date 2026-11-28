@@ -4,12 +4,14 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use data_encoding::HEXLOWER;
 use estafette_private_entry::write_atomically;
 use iroh::RelayUrl;
 use serde::{Deserialize, Serialize};
 
 use crate::clock::MILLIS_PER_SECOND;
-use crate::keys::HEX_CHARS_PER_KEY;
+use crate::crypto::KEY_LEN;
+use crate::keys::{HEX_CHARS_PER_KEY, render_key_bytes};
 use crate::wire::{self, MAX_RELAY_URL_BYTES};
 
 const HIDDEN_SECRET_DEBUG_TEXT: &str = "..";
@@ -54,10 +56,9 @@ pub enum HostOrigin {
 }
 
 /// One host of a network: its node id, relay, newest accepted record `ts`, and its origin.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "WireHost", into = "WireHost")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Host {
-    pub id: String,
+    pub id: wire::PublicKey,
     pub relay: String,
     pub ts: Option<u64>,
     pub origin: HostOrigin,
@@ -74,26 +75,37 @@ struct WireHost {
     heard: Option<UnixMillis>,
 }
 
-impl From<WireHost> for Host {
-    fn from(wire: WireHost) -> Self {
-        Self {
-            id: wire.id,
-            relay: wire.relay,
-            ts: wire.ts,
-            origin: wire
+impl WireHost {
+    /// The host this entry of `hosts` names, refused when its id is no lowercase hex key or its relay is no host relay.
+    fn into_host(self, index_in_hosts: usize, path: &Path) -> Result<Host, ConfigError> {
+        let Some(id) = lowercase_hex_key_bytes(&self.id).map(wire::PublicKey::from_bytes) else {
+            return Err(host_refusal(
+                path,
+                index_in_hosts,
+                HOST_ID_FIELD,
+                AcceptedValue::HexKey,
+            ));
+        };
+        let host = Host {
+            id,
+            relay: self.relay,
+            ts: self.ts,
+            origin: self
                 .heard
                 .map_or(HostOrigin::Configured, |heard| HostOrigin::Learned {
                     heard,
                 }),
-        }
+        };
+        host.validate_relay(index_in_hosts, path)?;
+        Ok(host)
     }
 }
 
-impl From<Host> for WireHost {
-    fn from(host: Host) -> Self {
+impl From<&Host> for WireHost {
+    fn from(host: &Host) -> Self {
         Self {
-            id: host.id,
-            relay: host.relay,
+            id: render_key_bytes(host.id.as_bytes()),
+            relay: host.relay.clone(),
             ts: host.ts,
             heard: match host.origin {
                 HostOrigin::Configured => None,
@@ -103,13 +115,39 @@ impl From<Host> for WireHost {
     }
 }
 
-/// The durable state of one network: its secret, its owner key, and its hosts.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct WireNetworkConfig {
+    secret: String,
+    owner: String,
+    hosts: Vec<WireHost>,
+}
+
+impl From<&NetworkConfig> for WireNetworkConfig {
+    fn from(config: &NetworkConfig) -> Self {
+        Self {
+            secret: config.secret.clone(),
+            owner: config.owner.clone(),
+            hosts: config.hosts.iter().map(WireHost::from).collect(),
+        }
+    }
+}
+
+/// The durable state of one network: its secret, its owner key, and its hosts.
+#[derive(Clone, PartialEq, Eq)]
 pub struct NetworkConfig {
     pub secret: String,
     pub owner: String,
     pub hosts: Vec<Host>,
+}
+
+impl Serialize for NetworkConfig {
+    fn serialize<Serializer: serde::Serializer>(
+        &self,
+        serializer: Serializer,
+    ) -> Result<Serializer::Ok, Serializer::Error> {
+        WireNetworkConfig::from(self).serialize(serializer)
+    }
 }
 
 impl fmt::Debug for NetworkConfig {
@@ -322,16 +360,8 @@ impl Host {
         })
     }
 
-    /// Refuses the host at that index of `hosts` unless its id is a lowercase hex key and its relay is a host relay.
-    fn validate(&self, index_in_hosts: usize, path: &Path) -> Result<(), ConfigError> {
-        if !is_lowercase_hex_key(&self.id) {
-            return Err(host_refusal(
-                path,
-                index_in_hosts,
-                HOST_ID_FIELD,
-                AcceptedValue::HexKey,
-            ));
-        }
+    /// Refuses the host at that index of `hosts` unless its relay is a host relay.
+    fn validate_relay(&self, index_in_hosts: usize, path: &Path) -> Result<(), ConfigError> {
         if host_relay_url(&self.relay).is_none() {
             return Err(host_refusal(
                 path,
@@ -360,7 +390,7 @@ impl Host {
             &self.relay
         };
         Self {
-            id: newer.id.clone(),
+            id: newer.id,
             relay: relay_of_larger_ts.clone(),
             ts: self.ts.max(newer.ts),
             origin,
@@ -409,27 +439,27 @@ impl NetworkConfig {
     }
 
     fn rendered(&self) -> Result<String, ConfigError> {
-        toml::to_string(self).map_err(ConfigError::Unserializable)
+        toml::to_string(&WireNetworkConfig::from(self)).map_err(ConfigError::Unserializable)
     }
 
     fn validate(&self, path: &Path) -> Result<(), ConfigError> {
         require_hex_key(path, SECRET_FIELD, &self.secret)?;
         require_hex_key(path, OWNER_FIELD, &self.owner)?;
         for (index_in_hosts, host) in self.hosts.iter().enumerate() {
-            host.validate(index_in_hosts, path)?;
+            host.validate_relay(index_in_hosts, path)?;
         }
         Ok(())
     }
 
     fn merged_with(&self, on_disk: Option<Self>) -> Self {
-        let mut hosts: BTreeMap<String, Host> = BTreeMap::new();
+        let mut hosts: BTreeMap<wire::PublicKey, Host> = BTreeMap::new();
         let on_disk_hosts = on_disk.into_iter().flat_map(|config| config.hosts);
         for host in on_disk_hosts.chain(self.hosts.iter().cloned()) {
             let merged = match hosts.get(&host.id) {
                 Some(existing) => existing.merged_with(&host),
                 None => host,
             };
-            hosts.insert(merged.id.clone(), merged);
+            hosts.insert(merged.id, merged);
         }
         Self {
             secret: self.secret.clone(),
@@ -459,7 +489,7 @@ fn write_error(path: &Path) -> impl FnOnce(io::Error) -> ConfigError {
 }
 
 fn parse(path: &Path, text: &str) -> Result<NetworkConfig, ConfigError> {
-    let config: NetworkConfig =
+    let wire_config: WireNetworkConfig =
         toml::from_str(text).map_err(|decoding| ConfigError::Malformed {
             path: path.to_owned(),
             position: decoding
@@ -467,8 +497,19 @@ fn parse(path: &Path, text: &str) -> Result<NetworkConfig, ConfigError> {
                 .and_then(|span| position_in(text, span.start)),
             problem: MalformedProblem::of_decoding_message(decoding.message()),
         })?;
-    config.validate(path)?;
-    Ok(config)
+    require_hex_key(path, SECRET_FIELD, &wire_config.secret)?;
+    require_hex_key(path, OWNER_FIELD, &wire_config.owner)?;
+    let hosts = wire_config
+        .hosts
+        .into_iter()
+        .enumerate()
+        .map(|(index_in_hosts, host)| host.into_host(index_in_hosts, path))
+        .collect::<Result<_, _>>()?;
+    Ok(NetworkConfig {
+        secret: wire_config.secret,
+        owner: wire_config.owner,
+        hosts,
+    })
 }
 
 /// The line and column of a byte offset in the text, both counted from one.
@@ -500,15 +541,14 @@ fn host_refusal(
     }
 }
 
-fn is_lowercase_hex_key(value: &str) -> bool {
-    value.len() == HEX_CHARS_PER_KEY
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+fn lowercase_hex_key_bytes(value: &str) -> Option<[u8; KEY_LEN]> {
+    let mut bytes = [0; KEY_LEN];
+    (value.len() == HEX_CHARS_PER_KEY && HEXLOWER.decode_mut(value.as_bytes(), &mut bytes).is_ok())
+        .then_some(bytes)
 }
 
 fn require_hex_key(path: &Path, field: &'static str, value: &str) -> Result<(), ConfigError> {
-    if is_lowercase_hex_key(value) {
+    if lowercase_hex_key_bytes(value).is_some() {
         Ok(())
     } else {
         Err(ConfigError::InvalidField {
@@ -572,13 +612,17 @@ mod tests {
         render_public_key(&SecretKey::from_bytes(&[seed; KEY_LEN]).public())
     }
 
+    fn host_key(seed: u8) -> wire::PublicKey {
+        wire::PublicKey::from(SecretKey::from_bytes(&[seed; KEY_LEN]).public())
+    }
+
     fn heard_before(millis: u64) -> UnixMillis {
         UnixMillis(NOW_MILLIS.0.checked_sub(millis).unwrap())
     }
 
-    fn learned(id: &str, relay: &str, ts: Option<u64>, heard: UnixMillis) -> Host {
+    fn learned(id: wire::PublicKey, relay: &str, ts: Option<u64>, heard: UnixMillis) -> Host {
         Host {
-            id: id.to_owned(),
+            id,
             relay: relay.to_owned(),
             ts,
             origin: HostOrigin::Learned { heard },
@@ -595,7 +639,7 @@ mod tests {
         };
         for bytes in (MAX_RELAY_URL_BYTES - 2)..=(MAX_RELAY_URL_BYTES + 2) {
             let host = Host {
-                id: host_id(b'a'),
+                id: host_key(b'a'),
                 relay: relay_of_bytes(bytes),
                 ts: None,
                 origin: HostOrigin::Configured,
@@ -654,7 +698,7 @@ mod tests {
             let held_ts = drawn_ts(&mut draws);
             let path = directory.join(format!("net-{case}.toml"));
             network(vec![learned(
-                &host_id(b'a'),
+                host_key(b'a'),
                 FILE_RELAY,
                 file_ts,
                 NOW_MILLIS,
@@ -662,7 +706,7 @@ mod tests {
             .rewrite(&path, NOW_SECONDS)
             .unwrap();
             let held = network(vec![learned(
-                &host_id(b'a'),
+                host_key(b'a'),
                 HELD_RELAY,
                 held_ts,
                 NOW_MILLIS,
@@ -689,26 +733,26 @@ mod tests {
         let directory = scratch_directory("merge");
         let path = directory.join("net.toml");
         let on_disk = network(vec![
-            learned(&host_id(b'a'), "https://a/", Some(5), heard_before(10)),
-            learned(&host_id(b'b'), "https://b/", Some(8), heard_before(40)),
-            learned(&host_id(b'c'), "https://c/", Some(7), heard_before(20)),
+            learned(host_key(b'a'), "https://a/", Some(5), heard_before(10)),
+            learned(host_key(b'b'), "https://b/", Some(8), heard_before(40)),
+            learned(host_key(b'c'), "https://c/", Some(7), heard_before(20)),
         ]);
         on_disk.rewrite(&path, NOW_SECONDS).unwrap();
         let held = network(vec![
-            learned(&host_id(b'a'), "https://a/", Some(9), heard_before(50)),
-            learned(&host_id(b'b'), "https://b/", Some(4), heard_before(5)),
-            learned(&host_id(b'd'), "https://m/", Some(3), heard_before(30)),
+            learned(host_key(b'a'), "https://a/", Some(9), heard_before(50)),
+            learned(host_key(b'b'), "https://b/", Some(4), heard_before(5)),
+            learned(host_key(b'd'), "https://m/", Some(3), heard_before(30)),
         ]);
 
         let merged = held.rewrite(&path, NOW_SECONDS).unwrap();
 
         let mut expected_hosts = vec![
-            learned(&host_id(b'a'), "https://a/", Some(9), heard_before(10)),
-            learned(&host_id(b'b'), "https://b/", Some(8), heard_before(5)),
-            learned(&host_id(b'c'), "https://c/", Some(7), heard_before(20)),
-            learned(&host_id(b'd'), "https://m/", Some(3), heard_before(30)),
+            learned(host_key(b'a'), "https://a/", Some(9), heard_before(10)),
+            learned(host_key(b'b'), "https://b/", Some(8), heard_before(5)),
+            learned(host_key(b'c'), "https://c/", Some(7), heard_before(20)),
+            learned(host_key(b'd'), "https://m/", Some(3), heard_before(30)),
         ];
-        expected_hosts.sort_by(|first, second| first.id.cmp(&second.id));
+        expected_hosts.sort_by_key(|host| host.id);
         let expected = network(expected_hosts);
         assert_eq!(merged, expected);
         assert_eq!(NetworkConfig::load(&path).unwrap(), expected);
@@ -721,19 +765,19 @@ mod tests {
         let path = directory.join("net.toml");
         let held = network(vec![
             learned(
-                &host_id(b'1'),
+                host_key(b'1'),
                 "https://s/",
                 Some(1),
                 heard_before(LEARNED_HOST_EXPIRY_MILLIS + 1),
             ),
             learned(
-                &host_id(b'2'),
+                host_key(b'2'),
                 "https://b/",
                 Some(2),
                 heard_before(LEARNED_HOST_EXPIRY_MILLIS),
             ),
             Host {
-                id: host_id(b'3'),
+                id: host_key(b'3'),
                 relay: "https://k/".to_owned(),
                 ts: Some(3),
                 origin: HostOrigin::Configured,
@@ -742,8 +786,8 @@ mod tests {
 
         let written = held.rewrite(&path, NOW_SECONDS).unwrap();
 
-        let ids: BTreeSet<String> = written.hosts.iter().map(|host| host.id.clone()).collect();
-        assert_eq!(ids, BTreeSet::from([host_id(b'2'), host_id(b'3')]));
+        let ids: BTreeSet<wire::PublicKey> = written.hosts.iter().map(|host| host.id).collect();
+        assert_eq!(ids, BTreeSet::from([host_key(b'2'), host_key(b'3')]));
         assert_eq!(NetworkConfig::load(&path).unwrap(), written);
     }
 
@@ -751,14 +795,14 @@ mod tests {
     #[test]
     fn rewrite_keeps_a_host_configured_when_either_side_holds_it_configured() {
         let owner_configured = Host {
-            id: host_id(b'a'),
+            id: host_key(b'a'),
             relay: "https://a/".to_owned(),
             ts: Some(1),
             origin: HostOrigin::Configured,
         };
-        let learned_recently = learned(&host_id(b'a'), "https://a/", Some(1), NOW_MILLIS);
+        let learned_recently = learned(host_key(b'a'), "https://a/", Some(1), NOW_MILLIS);
         let learned_long_ago = learned(
-            &host_id(b'a'),
+            host_key(b'a'),
             "https://a/",
             Some(1),
             heard_before(LEARNED_HOST_EXPIRY_MILLIS + 5),
@@ -792,7 +836,7 @@ mod tests {
         let directory = scratch_directory("mode");
         let path = directory.join("net.toml");
         let held = network(vec![learned(
-            &host_id(b'a'),
+            host_key(b'a'),
             "https://a/",
             Some(1),
             NOW_MILLIS,
@@ -813,7 +857,7 @@ mod tests {
     fn rewrite_leaves_the_file_owner_only_under_a_umask_that_clears_the_owners_read_bit() {
         if let Some(directory) = scratch::directory_handed_by_parent() {
             network(vec![learned(
-                &host_id(b'a'),
+                host_key(b'a'),
                 "https://a/",
                 Some(1),
                 NOW_MILLIS,
@@ -844,7 +888,7 @@ mod tests {
         let path = directory.join("net.toml");
 
         network(vec![learned(
-            &host_id(b'a'),
+            host_key(b'a'),
             "https://a/",
             Some(1),
             NOW_MILLIS,
@@ -1059,7 +1103,7 @@ mod tests {
         let directory = scratch_directory("concurrent");
         let path = directory.join("net.toml");
         let held = network(vec![learned(
-            &host_id(b'a'),
+            host_key(b'a'),
             "https://a/",
             Some(1),
             NOW_MILLIS,
@@ -1185,7 +1229,7 @@ mod tests {
         let directory = scratch_directory("message");
         let path = directory.join("net.toml");
         let mut held = network(vec![learned(
-            &host_id(b'a'),
+            host_key(b'a'),
             "http://insecure/",
             None,
             NOW_MILLIS,
@@ -1222,7 +1266,7 @@ mod tests {
         let path = directory.join("net.toml");
 
         let written = network(vec![learned(
-            &host_id(b'a'),
+            host_key(b'a'),
             "https://a/",
             None,
             NOW_MILLIS,
