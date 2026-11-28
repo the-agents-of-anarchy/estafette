@@ -998,9 +998,9 @@ mod tests {
             (DirectError::Timeout, ErrorCode::Timeout),
             (DirectError::Refused, ErrorCode::Refused),
             (
-                DirectError::UnsealableRequest(EncodeError::Unencodable(
-                    postcard::Error::SerializeBufferFull,
-                )),
+                DirectError::UnsealableRequest(EncodeError::PastWireLimit {
+                    bytes: WIRE_LIMIT_BYTES.saturating_add(1),
+                }),
                 ErrorCode::Refused,
             ),
             (
