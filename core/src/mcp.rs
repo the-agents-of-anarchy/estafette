@@ -91,13 +91,12 @@ pub(crate) type EndpointBinding =
 pub type BindEndpoint =
     Arc<dyn Fn(SecretKey, GateKey, Vec<RelayUrl>, MonotonicClock) -> EndpointBinding + Send + Sync>;
 
-/// The network this process serves: where its cards and its inbox socket live, and its configuration with the file that keeps it.
+/// The network this process serves: where its cards live, and its configuration with the file that keeps it.
 pub struct ServedNetwork {
     pub directories: Directories,
     pub network: Handle,
     pub config: NetworkConfig,
     pub config_path: PathBuf,
-    pub inbox_path: PathBuf,
 }
 
 /// The side effects the server runs on, initialized by the composition root.
@@ -402,7 +401,7 @@ impl Server {
         let node = self.session.claim(card, node, lock)?;
         Ok(ToolResult::Claimed {
             handle: node.own_handle().as_str().to_owned(),
-            inbox_path: self.served.inbox_path.clone(),
+            inbox_path: self.effects.node.inbox.path().to_owned(),
         })
     }
 
@@ -1401,7 +1400,6 @@ mod tests {
             )
             .unwrap(),
         );
-        let inbox_path = directories.inbox_socket_file(plan.process_id);
         let random_draws = Mutex::new(Draws::seeded(u64::from(plan.process_id)));
         let served = ServedNetwork {
             config_path: machine
@@ -1410,7 +1408,6 @@ mod tests {
             directories,
             network: NETWORK.parse().unwrap(),
             config: plan.config,
-            inbox_path,
         };
         let effects = ServerEffects {
             node: NodeEffects {

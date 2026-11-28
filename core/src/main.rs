@@ -621,7 +621,6 @@ fn serve_mcp(
         .map_err(CommandLineFailure::InboxSocket)?;
         let signals = forward_shutdown_signals()?;
         let served = ServedNetwork {
-            inbox_path: directories.inbox_socket_file(process_id),
             directories,
             network: registry.network,
             config,

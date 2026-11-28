@@ -249,6 +249,12 @@ impl InboxSocket {
         }
     }
 
+    /// The path of this process's inbox socket, where clients connect.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.socket_path
+    }
+
     /// Numbers the message, buffers it, streams it to every attached client, records its delivery, and returns whether a client was attached, the value the record carries.
     #[must_use]
     pub fn publish(&self, message: ReceivedMessage) -> bool {
@@ -505,6 +511,18 @@ mod tests {
 
     async fn next_seq(client: &mut BufReader<UnixStream>) -> u64 {
         next_frame(client).await["seq"].as_u64().unwrap()
+    }
+
+    /// Spec 3.10: a started socket names the path of this process's inbox socket, where its clients connect.
+    #[tokio::test]
+    async fn spec_3_10_a_started_socket_names_the_path_its_clients_connect_to() {
+        let directories = scratch_directories("own-path");
+        let socket = started(&directories);
+
+        assert_eq!(
+            socket.path(),
+            directories.inbox_socket_file(OWN_PROCESS_ID).as_path()
+        );
     }
 
     #[tokio::test]
