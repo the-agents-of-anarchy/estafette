@@ -16,7 +16,9 @@ use tokio::task::JoinError;
 use tokio::time::Instant;
 
 use crate::card::CardUnusable;
-use crate::cli::cards::{CardCommandError, create_card_with_fresh_key, judge_card_text};
+use crate::cli::cards::{
+    CardFailure, CardsDirectoryArg, create_card_with_fresh_key, judge_card_text,
+};
 use crate::cli::debug::DebugArgs;
 use crate::cli::lines::tab_separated_line;
 use crate::cli::network::NetworkFilesystem;
@@ -104,9 +106,8 @@ pub enum ObserverCommand {
         handle: LocalHandle,
         /// The text of the message
         body: String,
-        /// The cards directory, replacing the default one
-        #[arg(long)]
-        cards_dir: Option<PathBuf>,
+        #[command(flatten)]
+        cards_directory: CardsDirectoryArg,
         #[command(flatten)]
         debug: DebugArgs,
     },
@@ -137,7 +138,9 @@ impl ObserverCommand {
     pub fn cards_directory_override(&self) -> CardsDirectoryOverride {
         match self {
             Self::ShowPeers { .. } | Self::Tail { .. } => CardsDirectoryOverride::NotOffered,
-            Self::TestSend { cards_dir, .. } => CardsDirectoryOverride::Offered(cards_dir.clone()),
+            Self::TestSend {
+                cards_directory, ..
+            } => CardsDirectoryOverride::Offered(cards_directory.cards_dir.clone()),
         }
     }
 
@@ -182,7 +185,7 @@ enum Failure {
         source: io::Error,
     },
     Sidecar(SidecarError),
-    Card(CardCommandError),
+    Card(CardFailure),
     Session(ErrorCode),
     NotDelivered(ErrorCode),
     TopicClosed,
@@ -431,7 +434,7 @@ fn claim_operator_card(
 /// Returns the operator card's name as a handle, refusing it for the path when it is no handle.
 fn operator_name(path: &Path) -> Result<Handle, Failure> {
     OPERATOR_CARD.parse::<Handle>().map_err(|source| {
-        Failure::Card(CardCommandError::CardUnusable {
+        Failure::Card(CardFailure::CardUnusable {
             path: path.to_path_buf(),
             reason: CardUnusable::Handle(source),
         })
@@ -1673,7 +1676,7 @@ mod tests {
         let mut output = Vec::new();
         let test_send = ObserverCommand::TestSend {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
+            cards_directory: CardsDirectoryArg::default(),
             handle: SECOND_HANDLE.parse().unwrap(),
             body: OPERATOR_BODY.to_owned(),
             debug: DebugArgs::default(),
@@ -1741,7 +1744,7 @@ mod tests {
     fn operator_test_send() -> ObserverCommand {
         ObserverCommand::TestSend {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
+            cards_directory: CardsDirectoryArg::default(),
             handle: SECOND_HANDLE.parse().unwrap(),
             body: OPERATOR_BODY.to_owned(),
             debug: DebugArgs::default(),

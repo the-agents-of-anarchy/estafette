@@ -14,8 +14,6 @@ use crate::dirs::{
     CARD_EXTENSION, CARDS_DIRECTORY_VARIABLE, CARDS_SUBDIRECTORY, CardsDirectoryOverride,
     Directories, DirectoriesError, DirectoryFilesystem, KEY_EXTENSION, OperatingSystemFilesystem,
 };
-use crate::errors::ExitStatus;
-use crate::event::{ProcessEvent, write_run_record};
 use crate::handle::{Handle, HandleError};
 use crate::keys::render_public_key;
 use crate::sidecar::{CARD_FILE_MODE, SEED_BYTES, SidecarError, create_card};
@@ -46,13 +44,20 @@ fn list_cards_long_about() -> String {
     )
 }
 
+/// The flag that names the cards directory in place of the default one.
+#[derive(Debug, Clone, Default, Args)]
+pub struct CardsDirectoryArg {
+    /// The cards directory, replacing the default one
+    #[arg(long)]
+    pub cards_dir: Option<PathBuf>,
+}
+
 /// The network a command works on and the optional cards directory that replaces the default one.
 #[derive(Debug, Clone, Args)]
 pub struct RegistryArgs {
     pub network: Handle,
-    /// The cards directory, replacing the default one
-    #[arg(long)]
-    pub cards_dir: Option<PathBuf>,
+    #[command(flatten)]
+    pub cards_directory: CardsDirectoryArg,
 }
 
 /// The card commands of spec 3.13.
@@ -74,7 +79,7 @@ pub enum CardCommand {
 
 /// Why a card command failed, printed as its message alone.
 #[derive(Debug)]
-pub(crate) enum CardCommandError {
+pub(crate) enum CardFailure {
     Directories(DirectoriesError),
     Sidecar(SidecarError),
     CardsDirectoryUncreatable { path: PathBuf, source: io::Error },
@@ -85,7 +90,7 @@ pub(crate) enum CardCommandError {
     OutputUnwritable(io::Error),
 }
 
-impl fmt::Display for CardCommandError {
+impl fmt::Display for CardFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Directories(error) => error.fmt(formatter),
@@ -120,6 +125,18 @@ impl fmt::Display for CardCommandError {
     }
 }
 
+impl std::error::Error for CardFailure {}
+
+/// A card command that could not run, stated for whoever ran it.
+#[derive(Debug)]
+pub struct CardCommandError(CardFailure);
+
+impl fmt::Display for CardCommandError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 impl std::error::Error for CardCommandError {}
 
 /// The reads the card registry listing performs, supplied by the composition root.
@@ -151,25 +168,19 @@ impl CardRegistryReader for OperatingSystemFilesystem {
     }
 }
 
-/// Runs a card command: the result goes to stdout, the failure message alone to stderr.
+/// Runs a card command, writing the result to `stdout`.
+///
+/// # Errors
+///
+/// Returns [`CardCommandError`] naming what the operator must change.
 pub fn run(
     command: CardCommand,
     environment: impl Fn(&str) -> Option<OsString>,
     filesystem: &(impl DirectoryFilesystem + CardRegistryReader),
     fill_seed: impl FnOnce(&mut [u8; SEED_BYTES]),
     stdout: &mut impl Write,
-    stderr: &mut impl Write,
-) -> ExitStatus {
-    match execute(command, environment, filesystem, fill_seed, stdout) {
-        Ok(()) => ExitStatus::Success,
-        Err(failure) => {
-            drop(write_run_record(
-                stderr,
-                &ProcessEvent::CommandFailed(Box::new(failure)).into(),
-            ));
-            ExitStatus::Failure
-        }
-    }
+) -> Result<(), CardCommandError> {
+    execute(command, environment, filesystem, fill_seed, stdout).map_err(CardCommandError)
 }
 
 fn execute(
@@ -178,14 +189,15 @@ fn execute(
     filesystem: &(impl DirectoryFilesystem + CardRegistryReader),
     fill_seed: impl FnOnce(&mut [u8; SEED_BYTES]),
     stdout: &mut impl Write,
-) -> Result<(), CardCommandError> {
+) -> Result<(), CardFailure> {
     let result = match command {
         CardCommand::CreateCard {
             registry,
             card,
             handle,
         } => {
-            let directories = establish_directories(environment, filesystem, registry.cards_dir)?;
+            let directories =
+                establish_directories(environment, filesystem, registry.cards_directory.cards_dir)?;
             create_card_with_fresh_key(
                 &directories,
                 filesystem,
@@ -196,26 +208,27 @@ fn execute(
             )?
         }
         CardCommand::ListCards { registry } => {
-            let directories = establish_directories(environment, filesystem, registry.cards_dir)?;
+            let directories =
+                establish_directories(environment, filesystem, registry.cards_directory.cards_dir)?;
             list_registry_cards(filesystem, &directories, &registry.network)?
         }
     };
     stdout
         .write_all(result.as_bytes())
-        .map_err(CardCommandError::OutputUnwritable)
+        .map_err(CardFailure::OutputUnwritable)
 }
 
 fn establish_directories(
     environment: impl Fn(&str) -> Option<OsString>,
     filesystem: &impl DirectoryFilesystem,
     cards_dir: Option<PathBuf>,
-) -> Result<Directories, CardCommandError> {
+) -> Result<Directories, CardFailure> {
     Directories::establish(
         environment,
         filesystem,
         CardsDirectoryOverride::Offered(cards_dir),
     )
-    .map_err(CardCommandError::Directories)
+    .map_err(CardFailure::Directories)
 }
 
 /// Creates the card and its key file from a fresh seed in the network's cards directory, returning the public key line.
@@ -230,11 +243,11 @@ pub(crate) fn create_card_with_fresh_key(
     card: &Handle,
     handle: &Handle,
     fill_seed: impl FnOnce(&mut [u8; SEED_BYTES]),
-) -> Result<String, CardCommandError> {
+) -> Result<String, CardFailure> {
     let cards_directory = directories.cards_directory(network);
     filesystem
         .create_private_directory(&cards_directory)
-        .map_err(|source| CardCommandError::CardsDirectoryUncreatable {
+        .map_err(|source| CardFailure::CardsDirectoryUncreatable {
             path: cards_directory,
             source,
         })?;
@@ -246,7 +259,7 @@ pub(crate) fn create_card_with_fresh_key(
         handle,
         seed,
     )
-    .map_err(CardCommandError::Sidecar)?;
+    .map_err(CardFailure::Sidecar)?;
     Ok(render_public_key(&public_key) + LINE_END)
 }
 
@@ -254,15 +267,14 @@ fn list_registry_cards(
     filesystem: &impl CardRegistryReader,
     directories: &Directories,
     network: &Handle,
-) -> Result<String, CardCommandError> {
+) -> Result<String, CardFailure> {
     let cards_directory = directories.cards_directory(network);
     let mut lines_by_card_name = BTreeMap::new();
-    let card_files = card_files_in(filesystem, &cards_directory).map_err(|source| {
-        CardCommandError::Unreadable {
+    let card_files =
+        card_files_in(filesystem, &cards_directory).map_err(|source| CardFailure::Unreadable {
             path: cards_directory.clone(),
             source,
-        }
-    })?;
+        })?;
     for card_file in card_files {
         let (name, line) = describe_card_file(filesystem, &card_file, network)?;
         lines_by_card_name.insert(name, line);
@@ -302,17 +314,17 @@ pub(crate) fn judge_card_text(
     text: &str,
     card_file: &Path,
     network: &Handle,
-) -> Result<(Card, UsableCard), CardCommandError> {
-    let card = Card::from_str(text).map_err(|reason| CardCommandError::CardInvalid {
+) -> Result<(Card, UsableCard), CardFailure> {
+    let card = Card::from_str(text).map_err(|reason| CardFailure::CardInvalid {
         path: card_file.to_owned(),
         reason,
     })?;
-    let usable = card.check_usable_on(network.as_str()).map_err(|reason| {
-        CardCommandError::CardUnusable {
-            path: card_file.to_owned(),
-            reason,
-        }
-    })?;
+    let usable =
+        card.check_usable_on(network.as_str())
+            .map_err(|reason| CardFailure::CardUnusable {
+                path: card_file.to_owned(),
+                reason,
+            })?;
     Ok((card, usable))
 }
 
@@ -320,14 +332,14 @@ fn describe_card_file(
     filesystem: &impl CardRegistryReader,
     card_file: &Path,
     network: &Handle,
-) -> Result<(String, String), CardCommandError> {
-    let name = card_name_of(card_file).map_err(|source| CardCommandError::CardNameRefused {
+) -> Result<(String, String), CardFailure> {
+    let name = card_name_of(card_file).map_err(|source| CardFailure::CardNameRefused {
         path: card_file.to_owned(),
         source,
     })?;
     let text = filesystem
         .read_text(card_file)
-        .map_err(|source| CardCommandError::Unreadable {
+        .map_err(|source| CardFailure::Unreadable {
             path: card_file.to_owned(),
             source,
         })?;

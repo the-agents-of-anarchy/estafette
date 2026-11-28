@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
-use estafette::cli::cards::{self, CardCommand, RegistryArgs};
+use estafette::cli::cards::{self, CardCommand, CardCommandError, RegistryArgs};
 use estafette::cli::debug::{DebugArgs, Tracing};
 use estafette::cli::doctor::{self, DoctorArgs, DoctorError};
 #[cfg(feature = "relay")]
@@ -132,6 +132,7 @@ enum CommandLineFailure {
     Directories(DirectoriesError),
     ProcessUser(ProcessUserUnknown),
     ClockBeforeUnixEpoch,
+    Cards(CardCommandError),
     Network(NetworkCommandError),
     NetworkConfig(ConfigError),
     NetworkRefused(NodeError),
@@ -155,6 +156,7 @@ impl fmt::Display for CommandLineFailure {
             Self::Directories(source) => write!(formatter, "{source}"),
             Self::ProcessUser(source) => write!(formatter, "{source}"),
             Self::ClockBeforeUnixEpoch => formatter.write_str(CLOCK_BEFORE_UNIX_EPOCH),
+            Self::Cards(source) => write!(formatter, "{source}"),
             Self::Network(source) => write!(formatter, "{source}"),
             Self::NetworkConfig(source) => write!(formatter, "{source}"),
             Self::NetworkRefused(source) => write!(formatter, "{source}"),
@@ -208,13 +210,17 @@ fn run_command(
 ) -> ExitStatus {
     let filesystem = setup.filesystem;
     match command {
-        Command::Cards(command) => cards::run(
-            command,
-            &environment,
-            &filesystem,
-            fill_with_secure_random_bytes,
-            &mut io::stdout(),
-            &mut io::stderr(),
+        Command::Cards(command) => exit_status_after(
+            cards::run(
+                command,
+                &environment,
+                &filesystem,
+                fill_with_secure_random_bytes,
+                &mut io::stdout(),
+            )
+            .map(|()| ExitStatus::Success)
+            .map_err(CommandLineFailure::Cards),
+            standard_error_record().as_ref(),
         ),
         #[cfg(feature = "relay")]
         Command::Infrastructure(command) => run_infrastructure_command(
@@ -257,7 +263,7 @@ fn run_command(
             MCP_COMMAND,
             debug.tracing(),
             &environment,
-            CardsDirectoryOverride::Offered(registry.cards_dir.clone()),
+            CardsDirectoryOverride::Offered(registry.cards_directory.cards_dir.clone()),
             io::stderr(),
             setup,
             |directories, process| serve_mcp(registry, directories, process, filesystem),
@@ -266,7 +272,7 @@ fn run_command(
             DOCTOR_COMMAND,
             debug.tracing(),
             &environment,
-            CardsDirectoryOverride::Offered(arguments.registry.cards_dir.clone()),
+            CardsDirectoryOverride::Offered(arguments.registry.cards_directory.cards_dir.clone()),
             io::stderr(),
             setup,
             |directories, process| {

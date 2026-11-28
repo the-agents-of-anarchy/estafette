@@ -3,10 +3,14 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use estafette::cli::cards::{CardCommand, CardRegistryReader, RegistryArgs, run};
+use estafette::cli::cards::{
+    CardCommand, CardRegistryReader, CardsDirectoryArg, RegistryArgs, run,
+};
 use estafette::dirs::{DirectoryFilesystem, OperatingSystemFilesystem};
 use estafette::errors::ExitStatus;
+use estafette::event::{ProcessEvent, write_run_record};
 use estafette::handle::HandleError;
+use estafette::sidecar::SEED_BYTES;
 use iroh::SecretKey;
 
 mod common;
@@ -32,6 +36,26 @@ fn environment_under(root: &Path, cards_dir: Option<&Path>) -> impl Fn(&str) -> 
     }
 }
 
+fn run_reporting_failure(
+    command: CardCommand,
+    environment: impl Fn(&str) -> Option<OsString>,
+    filesystem: &(impl DirectoryFilesystem + CardRegistryReader),
+    fill_seed: impl FnOnce(&mut [u8; SEED_BYTES]),
+    stdout: &mut Vec<u8>,
+    stderr: &mut Vec<u8>,
+) -> ExitStatus {
+    match run(command, environment, filesystem, fill_seed, stdout) {
+        Ok(()) => ExitStatus::Success,
+        Err(failure) => {
+            drop(write_run_record(
+                stderr,
+                &ProcessEvent::CommandFailed(Box::new(failure)).into(),
+            ));
+            ExitStatus::Failure
+        }
+    }
+}
+
 fn execute(root: &Path, command: CardCommand, seed_byte: u8) -> Outcome {
     execute_with_environment(environment_under(root, None), command, seed_byte)
 }
@@ -53,7 +77,7 @@ fn execute_with_environment(
             };
         }
     };
-    let status = run(
+    let status = run_reporting_failure(
         command,
         environment,
         &filesystem,
@@ -71,7 +95,7 @@ fn execute_with_environment(
 fn registry(cards_dir: Option<PathBuf>) -> Result<RegistryArgs, HandleError> {
     Ok(RegistryArgs {
         network: NETWORK.parse()?,
-        cards_dir,
+        cards_directory: CardsDirectoryArg { cards_dir },
     })
 }
 
@@ -139,7 +163,7 @@ fn list_cards_lists_the_cards_the_file_system_holds_of_spec_3_13() {
     };
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let status = run(
+    let status = run_reporting_failure(
         list_cards(Some(cards_dir)).unwrap(),
         environment_under(Path::new("/nowhere-on-disk/base"), None),
         &registry,
@@ -303,7 +327,7 @@ fn list_canned_card(card_text: String) -> Result<Outcome, HandleError> {
     };
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    let status = run(
+    let status = run_reporting_failure(
         list_cards(Some(cards_dir))?,
         environment_under(Path::new("/nowhere-on-disk/base"), None),
         &registry,

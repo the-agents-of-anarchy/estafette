@@ -674,7 +674,7 @@ mod tests {
                 &DoctorArgs {
                     registry: RegistryArgs {
                         network: NETWORK_NAME.parse().unwrap(),
-                        cards_dir: None,
+                        cards_directory: crate::cli::cards::CardsDirectoryArg::default(),
                     },
                 },
                 &self.directories,
