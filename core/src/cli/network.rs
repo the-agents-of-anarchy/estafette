@@ -26,14 +26,16 @@ use crate::keys::{
     parse_secret_key, render_network_secret, render_public_key, render_secret_key,
 };
 use crate::wire::{self, HostAddr, Invitation, Version};
-use estafette_private_entry::{OWNER_ONLY_FILE_MODE, write_atomically, write_new_file_atomically};
+use estafette_private_entry::{
+    LeftBehind, OWNER_ONLY_FILE_MODE, write_atomically, write_new_file_atomically,
+};
 
 const CREATE_ABOUT: &str = "Create a network on this machine";
 const JOIN_ABOUT: &str = "Join a network from an invitation";
 const ADD_HOST_ABOUT: &str = "Add a host to a configured network";
 const SHOW_INVITATION_ABOUT: &str = "Print the invitation of a configured network";
 const CERTIFY_ABOUT: &str = "Sign a host's node id with the owner key";
-const CLEANUP_SEPARATOR: &str = "; ";
+const REFUSAL_AND_LEFT_BEHIND_JOINER: &str = "; ";
 
 fn create_long_about() -> String {
     format!(
@@ -177,7 +179,7 @@ enum Failure {
     Output(io::Error),
     NetworkAlreadyExists {
         network: Handle,
-        temporary_left_behind: Option<String>,
+        left_behind: Option<LeftBehind>,
     },
     NetworkNotConfigured {
         network: Handle,
@@ -215,16 +217,20 @@ impl fmt::Display for Failure {
             Self::Output(source) => write!(formatter, "cannot write the result: {source}"),
             Self::NetworkAlreadyExists {
                 network,
-                temporary_left_behind,
+                left_behind,
             } => {
                 write!(
                     formatter,
                     "network {} already has a configuration file or an owner key file here: choose another name, or remove both files if the network is abandoned",
                     network.as_str()
                 )?;
-                temporary_left_behind
-                    .iter()
-                    .try_for_each(|sentence| write!(formatter, "{CLEANUP_SEPARATOR}{sentence}"))
+                left_behind.iter().try_for_each(|left| {
+                    write!(
+                        formatter,
+                        "{REFUSAL_AND_LEFT_BEHIND_JOINER}{}",
+                        left.sentence()
+                    )
+                })
             }
             Self::NetworkNotConfigured { network } => write!(
                 formatter,
@@ -421,7 +427,7 @@ fn refuse_existing_file(
     if exists {
         Err(Failure::NetworkAlreadyExists {
             network: network.clone(),
-            temporary_left_behind: None,
+            left_behind: None,
         })
     } else {
         Ok(())
@@ -447,21 +453,25 @@ fn write_new_owner_only_file(
 ) -> Result<(), Failure> {
     filesystem
         .create_new_owner_only_file(path, contents)
-        .map_err(|source| match source.kind() {
-            io::ErrorKind::AlreadyExists => Failure::NetworkAlreadyExists {
-                network: network.clone(),
-                temporary_left_behind: temporary_left_behind(&source),
-            },
-            _ => io_failure(path)(source),
+        .map_err(|source| {
+            if source.kind() == io::ErrorKind::AlreadyExists {
+                Failure::NetworkAlreadyExists {
+                    network: network.clone(),
+                    left_behind: left_behind_of(source),
+                }
+            } else {
+                io_failure(path)(source)
+            }
         })
 }
 
-/// The sentence naming the temporary file a failed write left behind, when the write's error carries one after its own message.
-fn temporary_left_behind(source: &io::Error) -> Option<String> {
+/// What a failed write left behind, when its error carries it.
+fn left_behind_of(source: io::Error) -> Option<LeftBehind> {
     source
-        .to_string()
-        .split_once(CLEANUP_SEPARATOR)
-        .map(|(_failure, sentence)| sentence.to_owned())
+        .into_inner()?
+        .downcast::<LeftBehind>()
+        .ok()
+        .map(|left_behind| *left_behind)
 }
 
 fn io_failure(path: &Path) -> impl FnOnce(io::Error) -> Failure {

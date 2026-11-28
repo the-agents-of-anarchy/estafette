@@ -49,7 +49,31 @@ pub fn write_new_file_atomically(
     }
 }
 
-/// The failure, naming the file left behind and why its removal failed when the cleanup failed too, and keeping the failure's kind.
+/// A failure whose cleanup failed too: the failure, the file left behind and why its removal failed.
+#[derive(Debug)]
+pub struct LeftBehind {
+    failure: io::Error,
+    path: PathBuf,
+    cleanup: io::Error,
+}
+
+impl LeftBehind {
+    /// The sentence naming the file left behind and why its removal failed.
+    #[must_use]
+    pub fn sentence(&self) -> String {
+        format!("{} was left behind: {}", self.path.display(), self.cleanup)
+    }
+}
+
+impl std::fmt::Display for LeftBehind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}; {}", self.failure, self.sentence())
+    }
+}
+
+impl std::error::Error for LeftBehind {}
+
+/// The failure, carrying a [`LeftBehind`] naming the file left behind and why its removal failed when the cleanup failed too, and keeping the failure's kind.
 #[must_use]
 pub fn with_cleanup_outcome(
     failure: io::Error,
@@ -60,10 +84,11 @@ pub fn with_cleanup_outcome(
         Ok(()) => failure,
         Err(cleanup_failure) => io::Error::new(
             failure.kind(),
-            format!(
-                "{failure}; {} was left behind: {cleanup_failure}",
-                left_behind.display()
-            ),
+            LeftBehind {
+                failure,
+                path: left_behind.to_owned(),
+                cleanup: cleanup_failure,
+            },
         ),
     }
 }

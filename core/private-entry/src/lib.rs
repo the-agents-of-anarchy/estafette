@@ -19,7 +19,7 @@ pub use entry::{
     EntryFacts, EntryKind, ProcessUserUnknown, UntrustedEntry, process_user_id, same_entry,
 };
 pub use files::{
-    create_new_owner_only_file, remove_file_if_present, with_cleanup_outcome, write_atomically,
-    write_new_file_atomically,
+    LeftBehind, create_new_owner_only_file, remove_file_if_present, with_cleanup_outcome,
+    write_atomically, write_new_file_atomically,
 };
 pub use modes::{OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
