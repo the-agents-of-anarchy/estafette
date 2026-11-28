@@ -188,7 +188,7 @@ impl Card {
     /// Returns [`CardUnusable`] when the handle breaks the handle grammar, the public key is not an Ed25519 key, or the card names another network.
     pub fn check_usable_on(&self, network: &str) -> Result<UsableCard, CardUnusable> {
         let handle: Handle = self.handle.parse().map_err(CardUnusable::Handle)?;
-        let requested_handle = handle.as_str().parse().map_err(CardUnusable::Handle)?;
+        let requested_handle = AnnouncedHandle::from(handle);
         let public_key = parse_public_key(&self.public_key).map_err(CardUnusable::PublicKey)?;
         match &self.network {
             Some(named) if named != network => Err(CardUnusable::OtherNetwork {

@@ -80,6 +80,12 @@ impl FromStr for AnnouncedHandle {
     }
 }
 
+impl From<Handle> for AnnouncedHandle {
+    fn from(handle: Handle) -> Self {
+        Self(handle.0)
+    }
+}
+
 impl AnnouncedHandle {
     /// Returns the announced handle text.
     #[must_use]
@@ -173,6 +179,17 @@ mod tests {
                 accepted.parse::<Handle>().as_ref().map(Handle::as_str),
                 Ok(accepted)
             );
+        }
+    }
+
+    /// Spec 3.1: a handle is an announced handle with the same text.
+    #[test]
+    fn a_handle_converts_to_the_announced_handle_of_the_same_text_spec_3_1() {
+        let longest = "a".repeat(MAX_HANDLE_LENGTH);
+        for text in ["a", "z9", "a-", "h-02", longest.as_str()] {
+            let handle: Handle = text.parse().unwrap();
+
+            assert_eq!(AnnouncedHandle::from(handle).as_str(), text);
         }
     }
 
