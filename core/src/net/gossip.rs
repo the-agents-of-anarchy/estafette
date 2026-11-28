@@ -227,9 +227,9 @@ pub(crate) mod tests {
     const ABSENT_BOOTSTRAP_SEED: u8 = 46;
     const OUTSIDER_SECRET: NetworkSecret = NetworkSecret::from_bytes([10; KEY_LEN]);
     const HOST_RELAY: &str = "https://relay.example/";
-    pub const EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY: u64 = 4000;
+    const EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY: u64 = 4000;
     const LAG_WAIT: Duration = Duration::from_secs(30);
-    pub const DELIVERY_WAIT: Duration = Duration::from_secs(60);
+    const DELIVERY_WAIT: Duration = Duration::from_secs(60);
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     const JOIN_TIMEOUT_SLACK: Duration = Duration::from_millis(1000);
     const JUST_UNDER: Duration = Duration::from_millis(1);
@@ -424,8 +424,22 @@ pub(crate) mod tests {
         }
     }
 
+    /// Calls `broadcast` with the sequence number of each Presence of a flood that no subscription of one gossip instance can hold unread, every number below `end`.
+    pub async fn presence_flood_below(end: u64, broadcast: impl AsyncFn(u64)) {
+        for seq in end.saturating_sub(EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY)..end {
+            broadcast(seq).await;
+        }
+    }
+
+    /// Waits until the gossip instance has received the whole flood, failing the test with the wait's name when the bound runs out first.
+    pub async fn flood_received_by(gossip: &Gossip) {
+        received_data_messages_within(gossip, EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY, DELIVERY_WAIT)
+            .await
+            .unwrap_or_else(|missed| missed.fail_the_test());
+    }
+
     /// Waits until the gossip instance has received the data messages, failing with what was awaited and the bound when the bound runs out first.
-    pub async fn received_data_messages_within(
+    async fn received_data_messages_within(
         gossip: &Gossip,
         data_messages: u64,
         within: Duration,
@@ -732,7 +746,7 @@ pub(crate) mod tests {
             first,
             ..
         } = joined_pair().await;
-        for seq in 0..EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY {
+        presence_flood_below(EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY, async |seq| {
             second_topic
                 .broadcast(
                     &secret_key(SECOND_SEED),
@@ -740,15 +754,9 @@ pub(crate) mod tests {
                 )
                 .await
                 .unwrap();
-        }
-
-        received_data_messages_within(
-            &first.gossip,
-            EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY,
-            DELIVERY_WAIT,
-        )
-        .await
-        .unwrap_or_else(|missed| missed.fail_the_test());
+        })
+        .await;
+        flood_received_by(&first.gossip).await;
 
         let first_error = timeout(LAG_WAIT, async {
             loop {

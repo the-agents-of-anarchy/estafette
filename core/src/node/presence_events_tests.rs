@@ -25,9 +25,7 @@ use crate::event::{EventFields, RunRecord};
 use crate::net::direct::tests::{StandingClock, test_salt, unrecorded_register};
 use crate::net::direct::{ClientTimeouts, DirectClient, HeldConnections};
 use crate::net::endpoint::{BoundEndpoint, DIRECT_ALPN, LocationHash, TransportRecord};
-use crate::net::gossip::tests::{
-    DELIVERY_WAIT, EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY, received_data_messages_within,
-};
+use crate::net::gossip::tests::{flood_received_by, presence_flood_below};
 use crate::net::gossip::{GossipEvent, NetworkTopic};
 use crate::node::addresses::wire_addr;
 use crate::node::direct_requests::DirectContact;
@@ -1242,12 +1240,12 @@ const ACCEPTED_AFTER_THE_FAILURE_WITHIN: Duration = Duration::from_secs(30);
 
 /// The Presences of the marker card, each newer than the last and all older than the clock's reading, that no subscription of one gossip instance can hold unread.
 async fn broadcast_more_presences_than_the_subscription_holds(witness: &Witness) {
-    let first_seq = FROZEN_CLOCK_MS - EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY;
-    for seq in first_seq..FROZEN_CLOCK_MS {
+    presence_flood_below(FROZEN_CLOCK_MS, async |seq| {
         witness
             .broadcast_as(MARKER_SEED, presence_of(MARKER_SEED, MARKER_HANDLE, seq))
             .await;
-    }
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -1265,13 +1263,7 @@ async fn spec_3_8_a_member_whose_topic_lagged_records_the_failure_and_goes_on_ac
     .await;
     let witness = Witness::joined_through(WITNESS_SEED, None, held_loop.endpoint.endpoint()).await;
     broadcast_more_presences_than_the_subscription_holds(&witness).await;
-    received_data_messages_within(
-        &held_loop.gossip,
-        EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY,
-        DELIVERY_WAIT,
-    )
-    .await
-    .unwrap_or_else(|missed| missed.fail_the_test());
+    flood_received_by(&held_loop.gossip).await;
 
     let running = tokio::spawn(held_loop.run());
     recorded_until(
