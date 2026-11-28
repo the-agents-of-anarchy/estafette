@@ -1486,6 +1486,18 @@ mod tests {
         );
     }
 
+    /// Observability decision 9: a re-encoding past the wire limit is named past the wire limit.
+    #[test]
+    fn observability_decision_9_a_re_encoding_past_the_wire_limit_is_named_past_the_wire_limit() {
+        assert_eq!(
+            OpeningFailure::Encode(EncodeError::PastWireLimit {
+                bytes: SPEC_WIRE_LIMIT_BYTES.saturating_add(1)
+            })
+            .drop_rule(),
+            PayloadDropRule::PastWireLimit
+        );
+    }
+
     const DEFAULT_PORT_HOST_RELAY: &str = "https://relay.example:443";
 
     fn host_relay_of_bytes(length: usize) -> String {
