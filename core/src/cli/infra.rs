@@ -21,7 +21,7 @@ use iroh_relay::server::{
 use tokio::time::Instant;
 
 use super::debug::DebugArgs;
-use super::network::NetworkFilesystem;
+use super::network::{NetworkFilesystem, read_network_config};
 use crate::clock::{MILLIS_PER_SECOND, MonotonicClock, deadline_reached, later_by};
 use crate::config::{ConfigError, NetworkConfig};
 use crate::crypto::{
@@ -461,7 +461,7 @@ fn read_host_files(
     result: &mut impl Write,
 ) -> Result<HostFiles, Failure> {
     let config_file = directories.network_config_file(network);
-    let config = load_configured_network(network, &config_file)?;
+    let config = load_configured_network(network, &config_file, filesystem)?;
     let known_hosts = known_host_addresses(&config).map_err(Failure::Node)?;
     let network_keys = Network::new(config, config_file).map_err(Failure::Node)?;
     let key_file = directories.infrastructure_key_file(network);
@@ -490,8 +490,12 @@ fn read_host_files(
 }
 
 /// The network's configuration, refusing a network with no configuration file here.
-fn load_configured_network(network: &Handle, config_file: &Path) -> Result<NetworkConfig, Failure> {
-    NetworkConfig::load(config_file).map_err(|refusal| match refusal {
+fn load_configured_network(
+    network: &Handle,
+    config_file: &Path,
+    filesystem: &impl NetworkFilesystem,
+) -> Result<NetworkConfig, Failure> {
+    read_network_config(filesystem, config_file).map_err(|refusal| match refusal {
         ConfigError::Read { source, .. } if source.kind() == io::ErrorKind::NotFound => {
             Failure::NetworkNotConfigured {
                 network: network.as_str().to_owned(),

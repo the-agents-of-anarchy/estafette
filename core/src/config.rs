@@ -411,8 +411,15 @@ impl NetworkConfig {
     /// # Errors
     /// Returns a `ConfigError` when the file cannot be read or is not a valid network configuration.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let text = fs::read_to_string(path).map_err(read_error(path))?;
-        parse(path, &text)
+        Self::from_read(path, fs::read_to_string(path))
+    }
+
+    /// Validates the text a read of the file at `path` returned, naming the file when the read failed or the text is no network configuration.
+    ///
+    /// # Errors
+    /// Returns a `ConfigError` when the read failed or the text is not a valid network configuration.
+    pub fn from_read(path: &Path, read: io::Result<String>) -> Result<Self, ConfigError> {
+        parse(path, &read.map_err(read_error(path))?)
     }
 
     /// Merges this configuration with the file's current content, drops expired learned hosts, writes the result whole, and returns it.
@@ -420,13 +427,27 @@ impl NetworkConfig {
     /// # Errors
     /// Returns a `ConfigError` when this configuration or the file is malformed, or the file cannot be read or written.
     pub fn rewrite(&self, path: &Path, now_unix_seconds: u64) -> Result<Self, ConfigError> {
-        self.validate(path)?;
-        let merged = self
-            .merged_with(read_current(path)?)
-            .without_expired_hosts(UnixMillis::at_unix_second(now_unix_seconds));
-        let text = merged.rendered()?;
+        let (merged, text) = self.merged_text(path, fs::read_to_string(path), now_unix_seconds)?;
         write_atomically(path, &text).map_err(write_error(path))?;
         Ok(merged)
+    }
+
+    /// Merges this configuration with the text a read of the file at `path` returned, a missing file counting as no content, and drops expired learned hosts, returning the result and its file text.
+    ///
+    /// # Errors
+    /// Returns a `ConfigError` when this configuration or the text is malformed, or the read failed otherwise than by a missing file.
+    pub(crate) fn merged_text(
+        &self,
+        path: &Path,
+        current: io::Result<String>,
+        now_unix_seconds: u64,
+    ) -> Result<(Self, String), ConfigError> {
+        self.validate(path)?;
+        let merged = self
+            .merged_with(current_configuration(path, current)?)
+            .without_expired_hosts(UnixMillis::at_unix_second(now_unix_seconds));
+        let text = merged.rendered()?;
+        Ok((merged, text))
     }
 
     /// Refuses this configuration unless every field is valid, and renders it as the text of the file at `path` with one host entry for each id, sorted by id.
@@ -571,8 +592,11 @@ pub fn host_relay_url(relay: &str) -> Option<RelayUrl> {
         .filter(|url| url.scheme() == RELAY_URL_SCHEME)
 }
 
-fn read_current(path: &Path) -> Result<Option<NetworkConfig>, ConfigError> {
-    match fs::read_to_string(path) {
+fn current_configuration(
+    path: &Path,
+    read: io::Result<String>,
+) -> Result<Option<NetworkConfig>, ConfigError> {
+    match read {
         Ok(text) => parse(path, &text).map(Some),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(read_error(path)(source)),

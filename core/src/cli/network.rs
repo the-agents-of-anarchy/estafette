@@ -7,7 +7,8 @@ use clap::Subcommand;
 use iroh::PublicKey;
 
 use crate::config::{
-    AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, OWNER_FIELD, SECRET_FIELD,
+    AcceptedValue, ConfigError, HOST_ID_FIELD, Host, HostOrigin, NetworkConfig, OWNER_FIELD,
+    SECRET_FIELD,
 };
 use crate::crypto::{
     HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, render_host_certificate, sign_host_certificate,
@@ -24,7 +25,7 @@ use crate::keys::{
     parse_secret_key, render_network_secret, render_public_key, render_secret_key,
 };
 use crate::wire::{self, HostAddr, Invitation, Version};
-use estafette_private_entry::{OWNER_ONLY_FILE_MODE, write_new_file_atomically};
+use estafette_private_entry::{OWNER_ONLY_FILE_MODE, write_atomically, write_new_file_atomically};
 
 const CREATE_ABOUT: &str = "Create a network on this machine";
 const JOIN_ABOUT: &str = "Join a network from an invitation";
@@ -109,6 +110,13 @@ pub trait NetworkFilesystem: DirectoryFilesystem {
     /// Fails with `AlreadyExists` when the path exists, with the operating system's error when the file cannot be written or linked, and with `<path> was written` or `<failure>; <temporary> was left behind: <cleanup failure>` when the temporary file cannot be removed.
     fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()>;
 
+    /// Writes the contents whole to a file readable by its owner alone, through a temporary file renamed over the path.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the operating system's error when the file cannot be written or renamed, naming the temporary file when its removal fails too.
+    fn replace_file(&self, path: &Path, contents: &str) -> io::Result<()>;
+
     /// Removes a file.
     ///
     /// # Errors
@@ -132,9 +140,43 @@ impl NetworkFilesystem for OperatingSystemFilesystem {
         })
     }
 
+    fn replace_file(&self, path: &Path, contents: &str) -> io::Result<()> {
+        write_atomically(path, contents)
+    }
+
     fn remove_file(&self, path: &Path) -> io::Result<()> {
         fs::remove_file(path)
     }
+}
+
+/// Reads and validates the network configuration at `path` through the filesystem.
+///
+/// # Errors
+///
+/// Returns a `ConfigError` when the file cannot be read or is not a valid network configuration.
+pub(crate) fn read_network_config(
+    filesystem: &impl NetworkFilesystem,
+    path: &Path,
+) -> Result<NetworkConfig, ConfigError> {
+    NetworkConfig::from_read(path, filesystem.read_to_string(path))
+}
+
+/// Merges the configuration with the file at `path` read through the filesystem, writes the result whole through it, and returns the result.
+fn rewrite_network_config(
+    filesystem: &impl NetworkFilesystem,
+    config: &NetworkConfig,
+    path: &Path,
+    now_unix_seconds: u64,
+) -> Result<NetworkConfig, ConfigError> {
+    let (merged, text) =
+        config.merged_text(path, filesystem.read_to_string(path), now_unix_seconds)?;
+    filesystem
+        .replace_file(path, &text)
+        .map_err(|source| ConfigError::Write {
+            path: path.to_owned(),
+            source,
+        })?;
+    Ok(merged)
 }
 
 #[derive(Debug)]
@@ -304,10 +346,16 @@ fn run_command(
             now_unix_seconds,
             record,
         ),
-        NetworkCommand::AddHost { network, host_line } => {
-            add_host(network, host_line, directories, now_unix_seconds)
+        NetworkCommand::AddHost { network, host_line } => add_host(
+            network,
+            host_line,
+            directories,
+            filesystem,
+            now_unix_seconds,
+        ),
+        NetworkCommand::ShowInvitation { network } => {
+            show_invitation(network, directories, filesystem, result)
         }
-        NetworkCommand::ShowInvitation { network } => show_invitation(network, directories, result),
         NetworkCommand::Certify { network, host_line } => {
             certify_host(network, host_line, directories, filesystem, result)
         }
@@ -335,13 +383,13 @@ fn create_network(
         &render_secret_key(&owner),
     )?;
     let secret = generate_network_secret(&mut fill_from_secure_source);
-    NetworkConfig {
+    let created = NetworkConfig {
         secret: render_network_secret(&secret),
         owner: render_public_key(&owner.public()),
         hosts: Vec::new(),
-    }
-    .rewrite(&config_file, now_unix_seconds)
-    .map_err(|config| remove_owner_key_after(filesystem, &owner_key_file, config))?;
+    };
+    rewrite_network_config(filesystem, &created, &config_file, now_unix_seconds)
+        .map_err(|config| remove_owner_key_after(filesystem, &owner_key_file, config))?;
     write_run_record(
         record,
         &ProcessEvent::NetworkCreated {
@@ -447,20 +495,22 @@ fn add_host(
     network: &Handle,
     host_line: &HostAddr,
     directories: &Directories,
+    filesystem: &impl NetworkFilesystem,
     now_unix_seconds: u64,
 ) -> Result<(), Failure> {
-    let (config_file, mut config) = load_configured_network(network, directories)?;
+    let (config_file, mut config) = load_configured_network(network, directories, filesystem)?;
     config.hosts.push(configured_host(host_line)?);
-    config.rewrite(&config_file, now_unix_seconds)?;
+    rewrite_network_config(filesystem, &config, &config_file, now_unix_seconds)?;
     Ok(())
 }
 
 fn show_invitation(
     network: &Handle,
     directories: &Directories,
+    filesystem: &impl NetworkFilesystem,
     result: &mut impl Write,
 ) -> Result<(), Failure> {
-    let (config_file, config) = load_configured_network(network, directories)?;
+    let (config_file, config) = load_configured_network(network, directories, filesystem)?;
     let invitation = invitation_of(network, &config, &config_file)?;
     let text = render_invitation(&invitation).map_err(Failure::Invitation)?;
     writeln!(result, "{text}").map_err(Failure::Output)
@@ -469,9 +519,10 @@ fn show_invitation(
 fn load_configured_network(
     network: &Handle,
     directories: &Directories,
+    filesystem: &impl NetworkFilesystem,
 ) -> Result<(PathBuf, NetworkConfig), Failure> {
     let config_file = directories.network_config_file(network);
-    match NetworkConfig::load(&config_file) {
+    match read_network_config(filesystem, &config_file) {
         Ok(config) => Ok((config_file, config)),
         Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
             Err(Failure::NetworkNotConfigured {
@@ -531,10 +582,14 @@ fn host_address_of(
     index_in_hosts: usize,
     config_file: &Path,
 ) -> Result<HostAddr, Failure> {
+    let id = public_key_or(&host.id, || Failure::StoredKey {
+        field: HOST_ID_FIELD,
+        source: KeyError::NotAnEd25519PublicKey,
+    })?;
     let relay = host.wire_relay(index_in_hosts, config_file)?;
     Ok(HostAddr {
         v: Version::CURRENT,
-        id: host.id,
+        id: wire::PublicKey::from(id),
         relay,
     })
 }

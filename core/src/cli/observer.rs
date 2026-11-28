@@ -273,14 +273,18 @@ async fn run_command(
 ) -> Result<(), Failure> {
     match command {
         ObserverCommand::ShowPeers { network, .. } => {
-            let peers = observed_peers(directories, network, effects).await?;
+            let peers = observed_peers(directories, network, effects, |path| {
+                filesystem.read_to_string(path)
+            })
+            .await?;
             for peer in &peers {
                 write_line(stdout, &peer_line(peer))?;
             }
             Ok(())
         }
         ObserverCommand::Tail { network, .. } => {
-            let setup = load_network_setup(directories, network)?;
+            let setup =
+                load_network_setup(directories, network, |path| filesystem.read_to_string(path))?;
             start_observation(&setup, effects).await?.tail(stdout).await
         }
         ObserverCommand::TestSend {
@@ -289,7 +293,8 @@ async fn run_command(
             body,
             ..
         } => {
-            let setup = load_network_setup(directories, network)?;
+            let setup =
+                load_network_setup(directories, network, |path| filesystem.read_to_string(path))?;
             let operator =
                 claim_operator_card(directories, filesystem, pause, network, &effects.fill_seed)?;
             let delivery =
@@ -305,8 +310,9 @@ async fn observed_peers(
     directories: &Directories,
     network: &Handle,
     effects: ObserverEffects,
+    read_text: impl FnOnce(&Path) -> io::Result<String>,
 ) -> Result<Vec<Peer>, Failure> {
-    let setup = load_network_setup(directories, network)?;
+    let setup = load_network_setup(directories, network, read_text)?;
     start_observation(&setup, effects)
         .await?
         .collect_peers()
@@ -322,8 +328,9 @@ pub async fn count_visible_peers(
     directories: &Directories,
     network: &Handle,
     effects: ObserverEffects,
+    read_text: impl FnOnce(&Path) -> io::Result<String>,
 ) -> Result<usize, ObserverCommandError> {
-    observed_peers(directories, network, effects)
+    observed_peers(directories, network, effects, read_text)
         .await
         .map(|peers| peers.len())
         .map_err(ObserverCommandError)
@@ -466,9 +473,10 @@ struct NetworkSetup {
 fn load_network_setup(
     directories: &Directories,
     network: &Handle,
+    read_text: impl FnOnce(&Path) -> io::Result<String>,
 ) -> Result<NetworkSetup, Failure> {
     let path = directories.network_config_file(network);
-    let config = NetworkConfig::load(&path).map_err(Failure::Config)?;
+    let config = NetworkConfig::from_read(&path, read_text(&path)).map_err(Failure::Config)?;
     let hosts = known_host_addresses(&config).map_err(Failure::Node)?;
     let network = Network::new(config, path).map_err(Failure::Node)?;
     Ok(NetworkSetup { network, hosts })
@@ -3029,7 +3037,10 @@ mod tests {
         );
         let observer_clock = StandingClock::standing_an_hour_ahead();
         effects.monotonic = observer_clock.monotonic();
-        let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
+        let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap(), |path| {
+            fs::read_to_string(path)
+        })
+        .unwrap();
         let observation = start_observation(&setup, effects).await.unwrap();
         let observer_address = observation.endpoint.endpoint().addr();
         let mut tail_output = Vec::new();
@@ -3132,7 +3143,10 @@ mod tests {
         );
         let observer_clock = StandingClock::standing_an_hour_ahead();
         effects.monotonic = observer_clock.monotonic();
-        let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
+        let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap(), |path| {
+            fs::read_to_string(path)
+        })
+        .unwrap();
         let observation = start_observation(&setup, effects).await.unwrap();
         let observer_host = Arc::clone(&observation.host);
         let mut tail_output = Vec::new();
@@ -3384,7 +3398,10 @@ mod tests {
                 .collect(),
             Box::pin(async move { drop(interrupted.await) }),
         );
-        let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
+        let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap(), |path| {
+            fs::read_to_string(path)
+        })
+        .unwrap();
         let observation = start_observation(&setup, effects).await.unwrap();
         let observer_host = Arc::clone(&observation.host);
         let neighbor_key = secret_key(NEIGHBOR_SEED);

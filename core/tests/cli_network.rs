@@ -180,6 +180,10 @@ mod network_commands {
             fs::create_dir(&self.config_file)
         }
 
+        fn replace_file(&self, path: &Path, contents: &str) -> io::Result<()> {
+            self.filesystem.replace_file(path, contents)
+        }
+
         fn remove_file(&self, path: &Path) -> io::Result<()> {
             self.filesystem.remove_file(path)
         }
@@ -240,6 +244,10 @@ mod network_commands {
 
         fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
             self.filesystem.create_new_owner_only_file(path, contents)
+        }
+
+        fn replace_file(&self, path: &Path, contents: &str) -> io::Result<()> {
+            self.filesystem.replace_file(path, contents)
         }
 
         fn remove_file(&self, path: &Path) -> io::Result<()> {

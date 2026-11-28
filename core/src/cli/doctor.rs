@@ -173,10 +173,15 @@ pub async fn run(
     )?;
     report.record(
         Check::KnownRelays,
-        &known_relays_verdict(&config_path, &probe_relay, &*effects.monotonic).await,
+        &known_relays_verdict(filesystem, &config_path, &probe_relay, &*effects.monotonic).await,
     )?;
-    let visible_peer =
-        visible_peer_verdict(&arguments.registry.network, directories, effects).await;
+    let visible_peer = visible_peer_verdict(
+        &arguments.registry.network,
+        directories,
+        filesystem,
+        effects,
+    )
+    .await;
     report.record(Check::VisiblePeer, &visible_peer)?;
     Ok(report.exit_status())
 }
@@ -322,11 +327,12 @@ fn sidecars_verdict(
 }
 
 async fn known_relays_verdict(
+    filesystem: &(impl CardRegistryReader + Sync),
     config_path: &Path,
     probe_relay: &RelayProbe,
     clock: &dyn MonotonicTime,
 ) -> Verdict {
-    let relays = match known_relays(config_path) {
+    let relays = match known_relays(filesystem, config_path) {
         Ok(relays) => relays,
         Err(refusal) => return Verdict::Failed(refusal.to_string()),
     };
@@ -346,8 +352,12 @@ async fn known_relays_verdict(
     Verdict::of_failures(format!("relays answering: {}", relays.len()), &silent)
 }
 
-fn known_relays(config_path: &Path) -> Result<BTreeSet<RelayUrl>, KnownRelaysUnreadable> {
-    let config = NetworkConfig::load(config_path).map_err(KnownRelaysUnreadable::Configuration)?;
+fn known_relays(
+    filesystem: &impl CardRegistryReader,
+    config_path: &Path,
+) -> Result<BTreeSet<RelayUrl>, KnownRelaysUnreadable> {
+    let config = NetworkConfig::from_read(config_path, filesystem.read_text(config_path))
+        .map_err(KnownRelaysUnreadable::Configuration)?;
     let hosts = known_host_addresses(&config).map_err(KnownRelaysUnreadable::Host)?;
     Ok(hosts.into_iter().map(|host| host.relay).collect())
 }
@@ -371,9 +381,14 @@ impl fmt::Display for KnownRelaysUnreadable {
 async fn visible_peer_verdict(
     network: &Handle,
     directories: &Directories,
+    filesystem: &(impl CardRegistryReader + Sync),
     effects: ObserverEffects,
 ) -> Verdict {
-    match observer::count_visible_peers(directories, network, effects).await {
+    match observer::count_visible_peers(directories, network, effects, |path| {
+        filesystem.read_text(path)
+    })
+    .await
+    {
         Ok(0) => Verdict::Failed(String::from("the observer saw no peer")),
         Ok(peers) => Verdict::Passed(format!("peers seen by the observer: {peers}")),
         Err(refusal) => Verdict::Failed(refusal.to_string()),
