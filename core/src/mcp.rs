@@ -48,8 +48,6 @@ use crate::sidecar::{self, HeldSidecar, Pause, SidecarError};
 const SERVER_NAME: &str = "estafette";
 /// How many forwarded bytes of standard input the pipe to the MCP library holds before the forwarder waits; the forwarder buffers the rest itself.
 const SERVER_INPUT_BUFFER_BYTES: usize = 64 * 1024;
-/// The six tools of spec 3.10 (D28).
-const TOOL_COUNT: usize = 6;
 /// The JSON Schema keyword naming the type of a value.
 const SCHEMA_TYPE_KEY: &str = "type";
 /// The JSON Schema type of a tool's arguments.
@@ -842,48 +840,24 @@ fn present_peers(peers: &[Peer]) -> ToolResult {
     }
 }
 
-/// The six tools of spec 3.10, the same before and after init.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolName {
-    ListCards,
-    Init,
-    Peers,
-    Send,
-    Broadcast,
-    Inbox,
+macro_rules! declared_tools {
+    ($($tool:ident),+ $(,)?) => {
+        /// The six tools of spec 3.10 (D28), the same before and after init.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum ToolName {
+            $($tool),+
+        }
+
+        impl ToolName {
+            /// Every declared tool, in declaration order.
+            const ALL: [Self; [$(Self::$tool),+].len()] = [$(Self::$tool),+];
+        }
+    };
 }
 
+declared_tools!(ListCards, Init, Peers, Send, Broadcast, Inbox);
+
 impl ToolName {
-    const ALL: [Self; TOOL_COUNT] = listing_of_every_declared_tool([
-        Self::ListCards,
-        Self::Init,
-        Self::Peers,
-        Self::Send,
-        Self::Broadcast,
-        Self::Inbox,
-    ]);
-
-    /// The tool declared right after this one, none after the last.
-    const fn declared_after(self) -> Option<Self> {
-        match self {
-            Self::ListCards => Some(Self::Init),
-            Self::Init => Some(Self::Peers),
-            Self::Peers => Some(Self::Send),
-            Self::Send => Some(Self::Broadcast),
-            Self::Broadcast => Some(Self::Inbox),
-            Self::Inbox => None,
-        }
-    }
-
-    /// The place of the tool in the declaration of the enum.
-    #[expect(
-        clippy::as_conversions,
-        reason = "a fieldless enum's discriminant is its place in the declaration, and no const conversion gives it"
-    )]
-    const fn declaration_place(self) -> usize {
-        self as usize
-    }
-
     /// The tool a client calls by this name, if any.
     fn named(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|tool| tool.name() == name)
@@ -971,41 +945,6 @@ impl ToolName {
     fn tool(self) -> Tool {
         Tool::new(self.name(), self.description(), self.input_schema())
     }
-}
-
-/// Evaluates the listing in every build, `cargo check` included, which skips a constant nothing evaluates.
-const _: [ToolName; TOOL_COUNT] = ToolName::ALL;
-
-/// The listing itself, once the build has shown that it lists every declared tool once, in declaration order.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "each read of the listing follows an assertion that its place is within it"
-)]
-const fn listing_of_every_declared_tool(listing: [ToolName; TOOL_COUNT]) -> [ToolName; TOOL_COUNT] {
-    let mut listed = 0;
-    let mut declared = listing[0];
-    loop {
-        assert!(
-            declared.declaration_place() == listing[listed].declaration_place(),
-            "ToolName::ALL lists the tools in another order than the enum declares them"
-        );
-        match declared.declared_after() {
-            Some(next) => {
-                declared = next;
-                listed = listed.saturating_add(1);
-                assert!(
-                    listed < listing.len(),
-                    "a tool is declared that ToolName::ALL does not list"
-                );
-            }
-            None => break,
-        }
-    }
-    assert!(
-        listed.saturating_add(1) == listing.len(),
-        "ToolName::ALL lists a tool that is not declared"
-    );
-    listing
 }
 
 /// The schema of a value of one JSON type, with these further keywords.
@@ -2783,57 +2722,6 @@ mod tests {
         assert_eq!(claimed["ok"], json!(true));
         assert_eq!(before["tools"].as_array().unwrap().len(), SPEC_TOOL_COUNT);
         assert_eq!(after, before);
-    }
-
-    #[derive(Default)]
-    struct ToolsListed {
-        list_cards: u8,
-        init: u8,
-        peers: u8,
-        send: u8,
-        broadcast: u8,
-        inbox: u8,
-    }
-
-    impl ToolsListed {
-        fn marking(mut self, tool: ToolName) -> Self {
-            let slot = match tool {
-                ToolName::ListCards => &mut self.list_cards,
-                ToolName::Init => &mut self.init,
-                ToolName::Peers => &mut self.peers,
-                ToolName::Send => &mut self.send,
-                ToolName::Broadcast => &mut self.broadcast,
-                ToolName::Inbox => &mut self.inbox,
-            };
-            *slot = slot.saturating_add(1);
-            self
-        }
-
-        fn every_variant_named_by_the_match_listed_once(&self) -> bool {
-            let Self {
-                list_cards,
-                init,
-                peers,
-                send,
-                broadcast,
-                inbox,
-            } = self;
-            [list_cards, init, peers, send, broadcast, inbox]
-                .into_iter()
-                .all(|times_listed| *times_listed == 1)
-        }
-    }
-
-    #[test]
-    fn spec_3_10_every_tool_variant_is_in_the_list_the_server_lists() {
-        let listed = ToolName::ALL
-            .into_iter()
-            .fold(ToolsListed::default(), ToolsListed::marking);
-
-        assert!(
-            listed.every_variant_named_by_the_match_listed_once(),
-            "a variant the match of ToolsListed::marking names is not in ToolName::ALL"
-        );
     }
 
     fn every_tool_call() -> Vec<(&'static str, Value)> {
