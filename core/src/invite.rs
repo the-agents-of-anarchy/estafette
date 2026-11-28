@@ -2,7 +2,7 @@ use std::fmt;
 
 use data_encoding::HEXLOWER;
 
-use crate::wire::{self, CodecError, HostAddr, Invitation, Wire};
+use crate::wire::{self, CodecError, EncodeError, HostAddr, Invitation, Wire};
 
 pub const INVITATION_PREFIX: &str = "estafette-invite-1:";
 pub const HOST_LINE_PREFIX: &str = "estafette-host-1:";
@@ -14,6 +14,7 @@ pub enum InviteError {
     NotHexadecimal,
     NoHost,
     Codec(CodecError),
+    Encode(EncodeError),
 }
 
 impl fmt::Display for InviteError {
@@ -28,6 +29,7 @@ impl fmt::Display for InviteError {
             ),
             Self::NoHost => write!(formatter, "an invitation names at least one host"),
             Self::Codec(source) => write!(formatter, "{source}"),
+            Self::Encode(source) => write!(formatter, "{source}"),
         }
     }
 }
@@ -81,7 +83,7 @@ const fn ensure_one_host(invitation: &Invitation) -> Result<(), InviteError> {
 }
 
 fn render_with_prefix<T: Wire>(prefix: &str, structure: &T) -> Result<String, InviteError> {
-    let bytes = wire::encode(structure).map_err(InviteError::Codec)?;
+    let bytes = wire::encode(structure).map_err(InviteError::Encode)?;
     Ok(format!("{prefix}{}", HEXLOWER.encode(&bytes)))
 }
 

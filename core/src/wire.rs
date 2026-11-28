@@ -47,12 +47,38 @@ impl From<iroh::PublicKey> for PublicKey {
     }
 }
 
-/// A wire structure that failed to encode or decode, and why.
+fn write_past_wire_limit(formatter: &mut fmt::Formatter<'_>, bytes: usize) -> fmt::Result {
+    write!(
+        formatter,
+        "a wire structure of {bytes} bytes is past the wire limit of {WIRE_LIMIT_BYTES} bytes"
+    )
+}
+
+/// A wire structure that failed to encode, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EncodeError {
+    PastWireLimit { bytes: usize },
+    Unencodable(postcard::Error),
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PastWireLimit { bytes } => write_past_wire_limit(formatter, *bytes),
+            Self::Unencodable(source) => {
+                write!(formatter, "the structure does not encode: {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EncodeError {}
+
+/// A wire structure that failed to decode, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodecError {
     PastWireLimit { bytes: usize },
     TrailingBytes,
-    Unencodable(postcard::Error),
     Malformed(postcard::Error),
     UnsupportedVersion { found: u8 },
     RelayUrlTooLong { bytes: usize },
@@ -62,15 +88,9 @@ pub enum CodecError {
 impl fmt::Display for CodecError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PastWireLimit { bytes } => write!(
-                formatter,
-                "a wire structure of {bytes} bytes is past the wire limit of {WIRE_LIMIT_BYTES} bytes"
-            ),
+            Self::PastWireLimit { bytes } => write_past_wire_limit(formatter, *bytes),
             Self::TrailingBytes => {
                 formatter.write_str("bytes follow the end of the wire structure")
-            }
-            Self::Unencodable(source) => {
-                write!(formatter, "the structure does not encode: {source}")
             }
             Self::Malformed(source) => {
                 write!(formatter, "the bytes are not a wire structure: {source}")
@@ -567,10 +587,12 @@ impl Wire for Invitation {}
 ///
 /// # Errors
 ///
-/// Returns [`CodecError`].
-pub fn encode<T: Wire>(structure: &T) -> Result<Vec<u8>, CodecError> {
-    let bytes = postcard::to_allocvec(structure).map_err(CodecError::Unencodable)?;
-    ensure_within_wire_limit(bytes.len())?;
+/// Returns [`EncodeError`].
+pub fn encode<T: Wire>(structure: &T) -> Result<Vec<u8>, EncodeError> {
+    let bytes = postcard::to_allocvec(structure).map_err(EncodeError::Unencodable)?;
+    if is_past_wire_limit(bytes.len()) {
+        return Err(EncodeError::PastWireLimit { bytes: bytes.len() });
+    }
     Ok(bytes)
 }
 
@@ -580,7 +602,9 @@ pub fn encode<T: Wire>(structure: &T) -> Result<Vec<u8>, CodecError> {
 ///
 /// Returns [`CodecError`].
 pub fn decode<T: Wire>(bytes: &[u8]) -> Result<T, CodecError> {
-    ensure_within_wire_limit(bytes.len())?;
+    if is_past_wire_limit(bytes.len()) {
+        return Err(CodecError::PastWireLimit { bytes: bytes.len() });
+    }
     let (raw, remainder) = postcard::take_from_bytes(bytes).map_err(CodecError::Malformed)?;
     if !remainder.is_empty() {
         return Err(CodecError::TrailingBytes);
@@ -588,11 +612,8 @@ pub fn decode<T: Wire>(bytes: &[u8]) -> Result<T, CodecError> {
     T::check(raw)
 }
 
-const fn ensure_within_wire_limit(bytes: usize) -> Result<(), CodecError> {
-    if bytes > WIRE_LIMIT_BYTES {
-        return Err(CodecError::PastWireLimit { bytes });
-    }
-    Ok(())
+const fn is_past_wire_limit(bytes: usize) -> bool {
+    bytes > WIRE_LIMIT_BYTES
 }
 
 #[cfg(test)]
@@ -985,7 +1006,7 @@ mod tests {
 
         assert_eq!(
             encode(&past_the_limit),
-            Err(CodecError::PastWireLimit {
+            Err(EncodeError::PastWireLimit {
                 bytes: SPEC_WIRE_LIMIT_BYTES.saturating_add(1)
             })
         );

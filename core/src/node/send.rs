@@ -232,8 +232,8 @@ mod tests {
     use crate::stream_items::StreamExt;
     use crate::test_waits::{PROBE_NONCE, found_within, secret_key, wall_clock_ms};
     use crate::wire::{
-        Addr, CodecError, Departure, Introduce, IntroduceAck, Payload, ProbeAck, Request, Response,
-        WIRE_LIMIT_BYTES,
+        Addr, Departure, EncodeError, Introduce, IntroduceAck, Payload, ProbeAck, Request,
+        Response, WIRE_LIMIT_BYTES,
     };
 
     use super::*;
@@ -998,7 +998,9 @@ mod tests {
             (DirectError::Timeout, ErrorCode::Timeout),
             (DirectError::Refused, ErrorCode::Refused),
             (
-                DirectError::UnsealableRequest(CodecError::TrailingBytes),
+                DirectError::UnsealableRequest(EncodeError::Unencodable(
+                    postcard::Error::SerializeBufferFull,
+                )),
                 ErrorCode::Refused,
             ),
             (

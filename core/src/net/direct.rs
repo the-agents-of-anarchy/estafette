@@ -30,7 +30,7 @@ use crate::payload::{
 use crate::peers::{admissible_introduction_handle, announced_sender_handle};
 use crate::stream_items::StreamExt;
 use crate::wire::{
-    self, CodecError, IntroduceAck, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, Nonce, Probe,
+    self, EncodeError, IntroduceAck, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, Nonce, Probe,
     ProbeAck, Request, Response, Version, WIRE_LIMIT_BYTES,
 };
 
@@ -675,7 +675,7 @@ pub enum DirectError {
     Unreachable,
     Timeout,
     Refused,
-    UnsealableRequest(CodecError),
+    UnsealableRequest(EncodeError),
     InvalidAck(OpenError),
     OversizedAck,
     UnexpectedAck,

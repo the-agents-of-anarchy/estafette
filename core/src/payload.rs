@@ -9,9 +9,9 @@ use crate::crypto::{
     verify_host_certificate, verify_payload_signature,
 };
 use crate::wire::{
-    self, CodecError, Departure, Infrastructure, IntroduceAck, MessageAck, Payload, Presence,
-    PresenceRequest, ProbeAck, Request, Response, SignatureBytes, Unreachable, Wire, decode,
-    encode,
+    self, CodecError, Departure, EncodeError, Infrastructure, IntroduceAck, MessageAck, Payload,
+    Presence, PresenceRequest, ProbeAck, Request, Response, SignatureBytes, Unreachable, Wire,
+    decode, encode,
 };
 
 const GOSSIP_FRAME_BYTES: usize = 4096;
@@ -23,7 +23,7 @@ pub(crate) const ZERO_SIGNATURE: SignatureBytes = SignatureBytes([0; Signature::
 /// Why a gossip payload could not be sealed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SealError {
-    Codec(CodecError),
+    Encode(EncodeError),
     SignerIsNotThePayloadSigner,
     OverGossipFrame { bytes: usize },
 }
@@ -31,7 +31,7 @@ pub enum SealError {
 impl fmt::Display for SealError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Codec(source) => source.fmt(formatter),
+            Self::Encode(source) => source.fmt(formatter),
             Self::SignerIsNotThePayloadSigner => formatter
                 .write_str("the signing key is not the key the payload names as its signer"),
             Self::OverGossipFrame { bytes } => write!(
@@ -44,9 +44,9 @@ impl fmt::Display for SealError {
 
 impl std::error::Error for SealError {}
 
-impl From<CodecError> for SealError {
-    fn from(source: CodecError) -> Self {
-        Self::Codec(source)
+impl From<EncodeError> for SealError {
+    fn from(source: EncodeError) -> Self {
+        Self::Encode(source)
     }
 }
 
@@ -54,6 +54,7 @@ impl From<CodecError> for SealError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenError {
     Codec(CodecError),
+    Encode(EncodeError),
     Crypto(CryptoError),
 }
 
@@ -61,6 +62,7 @@ impl fmt::Display for OpenError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Codec(source) => source.fmt(formatter),
+            Self::Encode(source) => source.fmt(formatter),
             Self::Crypto(source) => source.fmt(formatter),
         }
     }
@@ -71,6 +73,12 @@ impl std::error::Error for OpenError {}
 impl From<CodecError> for OpenError {
     fn from(source: CodecError) -> Self {
         Self::Codec(source)
+    }
+}
+
+impl From<EncodeError> for OpenError {
+    fn from(source: EncodeError) -> Self {
+        Self::Encode(source)
     }
 }
 
@@ -237,6 +245,7 @@ pub enum PayloadDropRule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum OpeningFailure {
     Codec(CodecError),
+    Encode(EncodeError),
     Crypto(CryptoError),
     HostNotCertified,
     HostRelayRefused,
@@ -250,6 +259,12 @@ impl From<CodecError> for OpeningFailure {
     }
 }
 
+impl From<EncodeError> for OpeningFailure {
+    fn from(source: EncodeError) -> Self {
+        Self::Encode(source)
+    }
+}
+
 impl From<CryptoError> for OpeningFailure {
     fn from(source: CryptoError) -> Self {
         Self::Crypto(source)
@@ -260,9 +275,10 @@ impl OpeningFailure {
     /// The drop rule the failure applies.
     const fn drop_rule(&self) -> PayloadDropRule {
         match self {
-            Self::Codec(CodecError::PastWireLimit { .. }) => PayloadDropRule::PastWireLimit,
+            Self::Codec(CodecError::PastWireLimit { .. })
+            | Self::Encode(EncodeError::PastWireLimit { .. }) => PayloadDropRule::PastWireLimit,
             Self::Codec(CodecError::TrailingBytes) => PayloadDropRule::TrailingBytes,
-            Self::Codec(CodecError::Unencodable(_)) => PayloadDropRule::Unencodable,
+            Self::Encode(EncodeError::Unencodable(_)) => PayloadDropRule::Unencodable,
             Self::Codec(CodecError::Malformed(_)) => PayloadDropRule::Malformed,
             Self::Codec(CodecError::UnsupportedVersion { .. }) => {
                 PayloadDropRule::UnsupportedVersion
@@ -391,28 +407,28 @@ const fn with_signature(mut payload: Payload, signature: SignatureBytes) -> Payl
     payload
 }
 
-fn mac_zeroed_encoding<T: MacCarrying>(structure: &T) -> Result<Vec<u8>, CodecError> {
+fn mac_zeroed_encoding<T: MacCarrying>(structure: &T) -> Result<Vec<u8>, EncodeError> {
     encode(&structure.clone().with_mac(ZERO_MAC).wired())
 }
 
-fn with_computed_mac<T: MacCarrying>(keys: &NetworkKeys, structure: T) -> Result<T, CodecError> {
+fn with_computed_mac<T: MacCarrying>(keys: &NetworkKeys, structure: T) -> Result<T, EncodeError> {
     let mac = keys.mac(&mac_zeroed_encoding(&structure)?);
     Ok(structure.with_mac(mac))
 }
 
-/// Checks the mac a structure carries against the network key, failing as the caller's error type with the codec or crypto error that refused it.
-fn verify_mac<T: MacCarrying, Refusal: From<CodecError> + From<CryptoError>>(
+/// Checks the mac a structure carries against the network key, failing as the caller's error type with the encode or crypto error that refused it.
+fn verify_mac<T: MacCarrying, Refusal: From<EncodeError> + From<CryptoError>>(
     keys: &NetworkKeys,
     structure: &T,
 ) -> Result<(), Refusal> {
     Ok(keys.verify_mac(&mac_zeroed_encoding(structure)?, &structure.mac())?)
 }
 
-fn seal_with_mac<T: MacCarrying>(keys: &NetworkKeys, structure: T) -> Result<Vec<u8>, CodecError> {
+fn seal_with_mac<T: MacCarrying>(keys: &NetworkKeys, structure: T) -> Result<Vec<u8>, EncodeError> {
     encode(&with_computed_mac(keys, structure)?.wired())
 }
 
-fn signature_zeroed_encoding(payload: &Payload) -> Result<Vec<u8>, CodecError> {
+fn signature_zeroed_encoding(payload: &Payload) -> Result<Vec<u8>, EncodeError> {
     encode(&with_signature(
         payload.clone().with_mac(ZERO_MAC),
         ZERO_SIGNATURE,
@@ -618,8 +634,8 @@ fn opened_or_failure(
 /// Macs and encodes a direct request, ready to write to the stream.
 ///
 /// # Errors
-/// `CodecError` when the request does not encode within the wire limit.
-pub fn seal_request(keys: &NetworkKeys, request: Request) -> Result<Vec<u8>, CodecError> {
+/// `EncodeError` when the request does not encode within the wire limit.
+pub fn seal_request(keys: &NetworkKeys, request: Request) -> Result<Vec<u8>, EncodeError> {
     seal_with_mac(keys, request)
 }
 
@@ -636,11 +652,14 @@ pub fn open_request(keys: &NetworkKeys, bytes: &[u8]) -> Result<Request, OpenErr
 /// Macs and encodes a direct response, ready to write to the stream.
 ///
 /// # Errors
-/// `CodecError` when the response does not encode within the wire limit.
-pub(crate) fn seal_response(keys: &NetworkKeys, response: Response) -> Result<Vec<u8>, CodecError> {
+/// `EncodeError` when the response does not encode within the wire limit.
+pub(crate) fn seal_response(
+    keys: &NetworkKeys,
+    response: Response,
+) -> Result<Vec<u8>, EncodeError> {
     match MackedResponse::of(response) {
         Ok(macked) => seal_with_mac(keys, macked),
-        Err(message_ack) => Ok(encode(&Response::MessageAck(message_ack))?),
+        Err(message_ack) => encode(&Response::MessageAck(message_ack)),
     }
 }
 
@@ -1260,6 +1279,27 @@ mod tests {
         assert_eq!(open_response(&keys(), &sealed), Ok(message_ack()));
     }
 
+    #[test]
+    fn spec_3_14_a_request_past_the_wire_limit_is_not_sealed_and_names_its_size() {
+        let past_the_limit = Request::Message(Message {
+            v: Version::CURRENT,
+            id: MESSAGE_ID,
+            to: public_bytes(REPORTER_SEED),
+            handle: "alice".to_owned(),
+            attached: true,
+            sent_at: 1_700_000_000,
+            body: "b".repeat(SPEC_WIRE_LIMIT_BYTES),
+            mac: ZERO_MAC,
+        });
+
+        let refusal = seal_request(&keys(), past_the_limit).unwrap_err();
+
+        assert!(
+            matches!(refusal, EncodeError::PastWireLimit { bytes } if bytes > SPEC_WIRE_LIMIT_BYTES),
+            "{refusal}"
+        );
+    }
+
     const SPEC_WIRE_LIMIT_BYTES: usize = 1_114_112;
     const SPEC_RELAY_URLS_PER_ADDR_CAP: u8 = 4;
     const RELAY_URLS_PAST_THE_COUNT_CAP: u8 = 5;
@@ -1438,7 +1478,7 @@ mod tests {
     #[test]
     fn observability_decision_9_a_failed_re_encoding_is_named_unencodable() {
         assert_eq!(
-            OpeningFailure::Codec(CodecError::Unencodable(
+            OpeningFailure::Encode(EncodeError::Unencodable(
                 postcard::Error::SerializeBufferFull
             ))
             .drop_rule(),

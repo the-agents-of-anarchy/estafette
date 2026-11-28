@@ -222,7 +222,7 @@ mod tests {
     use crate::each_arm::assert_each_arm;
     use crate::event::{Event, ShortId, write_run_record};
     use crate::payload::OpenError;
-    use crate::wire::CodecError;
+    use crate::wire::EncodeError;
 
     const PEER_KEY_BYTE: u8 = 7;
 
@@ -247,7 +247,9 @@ mod tests {
             (DirectError::Timeout, "timeout"),
             (DirectError::Refused, "refused"),
             (
-                DirectError::UnsealableRequest(CodecError::TrailingBytes),
+                DirectError::UnsealableRequest(EncodeError::Unencodable(
+                    postcard::Error::SerializeBufferFull,
+                )),
                 "unsealable_request",
             ),
             (
@@ -273,7 +275,9 @@ mod tests {
             (DirectError::Timeout, "timeout"),
             (DirectError::Refused, "refused"),
             (
-                DirectError::UnsealableRequest(CodecError::TrailingBytes),
+                DirectError::UnsealableRequest(EncodeError::Unencodable(
+                    postcard::Error::SerializeBufferFull,
+                )),
                 "unsealable_request",
             ),
             (
