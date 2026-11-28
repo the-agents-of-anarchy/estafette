@@ -212,6 +212,7 @@ mod tests {
     use iroh::endpoint::Connection;
     use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 
+    use crate::crypto::CryptoError;
     use crate::net::direct::tests::closed_within_the_documented_latency;
     use crate::net::direct::{ClientTimeouts, DirectClient, DirectServer, message_id_text};
     use crate::net::endpoint::{BoundEndpoint, DIRECT_ALPN, NodeEndpoint};
@@ -226,12 +227,12 @@ mod tests {
         message_to, settled_direct_answers, start_members, start_members_reaching, start_pair,
         start_third_through_second, status_within,
     };
-    use crate::payload::{PayloadError, ZERO_SIGNATURE, open_request, seal_response};
+    use crate::payload::{OpenError, ZERO_SIGNATURE, open_request, seal_response};
     use crate::peers::Status;
     use crate::stream_items::StreamExt;
     use crate::test_waits::{PROBE_NONCE, found_within, secret_key, wall_clock_ms};
     use crate::wire::{
-        Addr, Departure, Introduce, IntroduceAck, Payload, ProbeAck, Request, Response,
+        Addr, CodecError, Departure, Introduce, IntroduceAck, Payload, ProbeAck, Request, Response,
         WIRE_LIMIT_BYTES,
     };
 
@@ -992,16 +993,18 @@ mod tests {
 
     #[test]
     fn spec_3_10_a_failed_ack_is_unreachable_or_timeout_only_for_those_failures() {
-        let payload_error = || PayloadError::SignerIsNotThePayloadSigner;
         let expected = [
             (DirectError::Unreachable, ErrorCode::Unreachable),
             (DirectError::Timeout, ErrorCode::Timeout),
             (DirectError::Refused, ErrorCode::Refused),
             (
-                DirectError::UnsealableRequest(payload_error()),
+                DirectError::UnsealableRequest(CodecError::TrailingBytes),
                 ErrorCode::Refused,
             ),
-            (DirectError::InvalidAck(payload_error()), ErrorCode::Refused),
+            (
+                DirectError::InvalidAck(OpenError::Crypto(CryptoError::MacMismatch)),
+                ErrorCode::Refused,
+            ),
             (DirectError::OversizedAck, ErrorCode::Refused),
             (DirectError::UnexpectedAck, ErrorCode::Refused),
             (DirectError::MessageAckIdMismatch, ErrorCode::Refused),

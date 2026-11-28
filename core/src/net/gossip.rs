@@ -9,7 +9,7 @@ use tokio::time::Instant;
 use crate::clock::{MonotonicClock, later_by};
 use crate::crypto::NetworkKeys;
 use crate::payload::{
-    OpenedPayload, PayloadError, PayloadRefusal, open_described_payload, seal_payload,
+    OpenedPayload, PayloadRefusal, SealError, open_described_payload, seal_payload,
 };
 use crate::stream_items::StreamExt;
 use crate::wire::Payload;
@@ -28,7 +28,7 @@ pub enum GossipEvent {
 
 #[derive(Debug)]
 pub enum GossipError {
-    Seal(PayloadError),
+    Seal(SealError),
     Topic(ApiError),
     Lagged,
 }
@@ -598,7 +598,7 @@ pub(crate) mod tests {
 
         assert!(matches!(
             refused,
-            Err(GossipError::Seal(PayloadError::OverGossipFrame { .. }))
+            Err(GossipError::Seal(SealError::OverGossipFrame { .. }))
         ));
         let arrived = presence_in(next_payload(&mut first_topic).await);
         assert_eq!(arrived.seq, 10);

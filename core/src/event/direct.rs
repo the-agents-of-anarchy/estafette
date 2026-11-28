@@ -218,10 +218,11 @@ mod tests {
     use iroh::SecretKey;
 
     use super::*;
-    use crate::crypto::KEY_LEN;
+    use crate::crypto::{CryptoError, KEY_LEN};
     use crate::each_arm::assert_each_arm;
     use crate::event::{Event, ShortId, write_run_record};
-    use crate::payload::PayloadError;
+    use crate::payload::OpenError;
+    use crate::wire::CodecError;
 
     const PEER_KEY_BYTE: u8 = 7;
 
@@ -246,11 +247,11 @@ mod tests {
             (DirectError::Timeout, "timeout"),
             (DirectError::Refused, "refused"),
             (
-                DirectError::UnsealableRequest(PayloadError::SignerIsNotThePayloadSigner),
+                DirectError::UnsealableRequest(CodecError::TrailingBytes),
                 "unsealable_request",
             ),
             (
-                DirectError::InvalidAck(PayloadError::SignerIsNotThePayloadSigner),
+                DirectError::InvalidAck(OpenError::Crypto(CryptoError::MacMismatch)),
                 "invalid_ack",
             ),
             (DirectError::OversizedAck, "oversized_ack"),
@@ -272,11 +273,11 @@ mod tests {
             (DirectError::Timeout, "timeout"),
             (DirectError::Refused, "refused"),
             (
-                DirectError::UnsealableRequest(PayloadError::SignerIsNotThePayloadSigner),
+                DirectError::UnsealableRequest(CodecError::TrailingBytes),
                 "unsealable_request",
             ),
             (
-                DirectError::InvalidAck(PayloadError::SignerIsNotThePayloadSigner),
+                DirectError::InvalidAck(OpenError::Crypto(CryptoError::MacMismatch)),
                 "invalid_ack",
             ),
             (DirectError::OversizedAck, "oversized_ack"),

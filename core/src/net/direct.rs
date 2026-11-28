@@ -25,13 +25,13 @@ use crate::crypto::NetworkKeys;
 use crate::errors::ErrorCode;
 use crate::event::{DirectEvent, Event, ShortId, TransportEvent};
 use crate::payload::{
-    PayloadError, ZERO_MAC, open_request, open_response, seal_request, seal_response,
+    OpenError, ZERO_MAC, open_request, open_response, seal_request, seal_response,
 };
 use crate::peers::{admissible_introduction_handle, announced_sender_handle};
 use crate::stream_items::StreamExt;
 use crate::wire::{
-    self, IntroduceAck, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, Nonce, Probe, ProbeAck,
-    Request, Response, Version, WIRE_LIMIT_BYTES,
+    self, CodecError, IntroduceAck, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, Nonce, Probe,
+    ProbeAck, Request, Response, Version, WIRE_LIMIT_BYTES,
 };
 
 const SERVER_READ_TIMEOUT: Duration = Duration::from_millis(10_000);
@@ -675,8 +675,8 @@ pub enum DirectError {
     Unreachable,
     Timeout,
     Refused,
-    UnsealableRequest(PayloadError),
-    InvalidAck(PayloadError),
+    UnsealableRequest(CodecError),
+    InvalidAck(OpenError),
     OversizedAck,
     UnexpectedAck,
     MessageAckIdMismatch,

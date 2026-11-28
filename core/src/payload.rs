@@ -20,19 +20,18 @@ const LARGEST_GOSSIP_PAYLOAD_BYTES: usize = GOSSIP_FRAME_BYTES - GOSSIP_LAYER_OV
 pub(crate) const ZERO_MAC: Mac = Mac::from_bytes([0; MAC_LEN]);
 pub(crate) const ZERO_SIGNATURE: SignatureBytes = SignatureBytes([0; Signature::LENGTH]);
 
+/// Why a gossip payload could not be sealed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PayloadError {
+pub enum SealError {
     Codec(CodecError),
-    Crypto(CryptoError),
     SignerIsNotThePayloadSigner,
     OverGossipFrame { bytes: usize },
 }
 
-impl fmt::Display for PayloadError {
+impl fmt::Display for SealError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Codec(source) => source.fmt(formatter),
-            Self::Crypto(source) => source.fmt(formatter),
             Self::SignerIsNotThePayloadSigner => formatter
                 .write_str("the signing key is not the key the payload names as its signer"),
             Self::OverGossipFrame { bytes } => write!(
@@ -43,15 +42,39 @@ impl fmt::Display for PayloadError {
     }
 }
 
-impl std::error::Error for PayloadError {}
+impl std::error::Error for SealError {}
 
-impl From<CodecError> for PayloadError {
+impl From<CodecError> for SealError {
     fn from(source: CodecError) -> Self {
         Self::Codec(source)
     }
 }
 
-impl From<CryptoError> for PayloadError {
+/// Why a direct request or response could not be opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenError {
+    Codec(CodecError),
+    Crypto(CryptoError),
+}
+
+impl fmt::Display for OpenError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Codec(source) => source.fmt(formatter),
+            Self::Crypto(source) => source.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for OpenError {}
+
+impl From<CodecError> for OpenError {
+    fn from(source: CodecError) -> Self {
+        Self::Codec(source)
+    }
+}
+
+impl From<CryptoError> for OpenError {
     fn from(source: CryptoError) -> Self {
         Self::Crypto(source)
     }
@@ -385,11 +408,8 @@ fn verify_mac<T: MacCarrying, Refusal: From<CodecError> + From<CryptoError>>(
     Ok(keys.verify_mac(&mac_zeroed_encoding(structure)?, &structure.mac())?)
 }
 
-fn seal_with_mac<T: MacCarrying>(
-    keys: &NetworkKeys,
-    structure: T,
-) -> Result<Vec<u8>, PayloadError> {
-    Ok(encode(&with_computed_mac(keys, structure)?.wired())?)
+fn seal_with_mac<T: MacCarrying>(keys: &NetworkKeys, structure: T) -> Result<Vec<u8>, CodecError> {
+    encode(&with_computed_mac(keys, structure)?.wired())
 }
 
 fn signature_zeroed_encoding(payload: &Payload) -> Result<Vec<u8>, CodecError> {
@@ -416,15 +436,15 @@ fn verify_signature(payload: &Payload) -> Result<(), OpeningFailure> {
 /// Signs, macs and encodes a gossip payload, ready to broadcast.
 ///
 /// # Errors
-/// `PayloadError` for a signer key that is not the payload's own signer and for an encoding past the gossip frame limit.
+/// `SealError` for a signer key that is not the payload's own signer and for an encoding past the gossip frame limit.
 pub fn seal_payload(
     keys: &NetworkKeys,
     signer: &SecretKey,
     payload: Payload,
-) -> Result<Vec<u8>, PayloadError> {
+) -> Result<Vec<u8>, SealError> {
     let (kind, signer_bytes) = signer_of(&payload);
     if signer.public().as_bytes() != signer_bytes.as_bytes() {
-        return Err(PayloadError::SignerIsNotThePayloadSigner);
+        return Err(SealError::SignerIsNotThePayloadSigner);
     }
     sign_then_mac(keys, kind, signer, payload)
 }
@@ -432,13 +452,13 @@ pub fn seal_payload(
 /// Signs, macs and encodes a gossip payload with any key, so a test can forge a payload its named signer never signed.
 ///
 /// # Errors
-/// `PayloadError` for an encoding past the gossip frame limit.
+/// `SealError` for an encoding past the gossip frame limit.
 #[cfg(test)]
 pub(crate) fn sealed_by_any_key(
     keys: &NetworkKeys,
     signer: &SecretKey,
     payload: Payload,
-) -> Result<Vec<u8>, PayloadError> {
+) -> Result<Vec<u8>, SealError> {
     let (kind, _named_signer) = signer_of(&payload);
     sign_then_mac(keys, kind, signer, payload)
 }
@@ -448,12 +468,12 @@ fn sign_then_mac(
     kind: SignedPayloadKind,
     signer: &SecretKey,
     payload: Payload,
-) -> Result<Vec<u8>, PayloadError> {
+) -> Result<Vec<u8>, SealError> {
     let signature = sign_payload(kind, signer, &signature_zeroed_encoding(&payload)?);
     let with_signature_set = with_signature(payload, SignatureBytes(signature.to_bytes()));
     let encoded = seal_with_mac(keys, with_signature_set)?;
     if encoded.len() > LARGEST_GOSSIP_PAYLOAD_BYTES {
-        return Err(PayloadError::OverGossipFrame {
+        return Err(SealError::OverGossipFrame {
             bytes: encoded.len(),
         });
     }
@@ -598,29 +618,26 @@ fn opened_or_failure(
 /// Macs and encodes a direct request, ready to write to the stream.
 ///
 /// # Errors
-/// `PayloadError::Codec` when the request does not encode within the wire limit.
-pub fn seal_request(keys: &NetworkKeys, request: Request) -> Result<Vec<u8>, PayloadError> {
+/// `CodecError` when the request does not encode within the wire limit.
+pub fn seal_request(keys: &NetworkKeys, request: Request) -> Result<Vec<u8>, CodecError> {
     seal_with_mac(keys, request)
 }
 
 /// Decodes a direct request and accepts it only when its mac verifies.
 ///
 /// # Errors
-/// `PayloadError` for bytes that do not decode and for a wrong mac.
-pub fn open_request(keys: &NetworkKeys, bytes: &[u8]) -> Result<Request, PayloadError> {
+/// `OpenError` for bytes that do not decode and for a wrong mac.
+pub fn open_request(keys: &NetworkKeys, bytes: &[u8]) -> Result<Request, OpenError> {
     let request: Request = decode(bytes)?;
-    verify_mac::<Request, PayloadError>(keys, &request)?;
+    verify_mac::<Request, OpenError>(keys, &request)?;
     Ok(request)
 }
 
 /// Macs and encodes a direct response, ready to write to the stream.
 ///
 /// # Errors
-/// `PayloadError::Codec` when the response does not encode within the wire limit.
-pub(crate) fn seal_response(
-    keys: &NetworkKeys,
-    response: Response,
-) -> Result<Vec<u8>, PayloadError> {
+/// `CodecError` when the response does not encode within the wire limit.
+pub(crate) fn seal_response(keys: &NetworkKeys, response: Response) -> Result<Vec<u8>, CodecError> {
     match MackedResponse::of(response) {
         Ok(macked) => seal_with_mac(keys, macked),
         Err(message_ack) => Ok(encode(&Response::MessageAck(message_ack))?),
@@ -630,11 +647,11 @@ pub(crate) fn seal_response(
 /// Decodes a direct response and accepts it only when its mac verifies.
 ///
 /// # Errors
-/// `PayloadError` for bytes that do not decode and for a wrong mac.
-pub fn open_response(keys: &NetworkKeys, bytes: &[u8]) -> Result<Response, PayloadError> {
+/// `OpenError` for bytes that do not decode and for a wrong mac.
+pub fn open_response(keys: &NetworkKeys, bytes: &[u8]) -> Result<Response, OpenError> {
     match MackedResponse::of(decode(bytes)?) {
         Ok(macked) => {
-            verify_mac::<MackedResponse, PayloadError>(keys, &macked)?;
+            verify_mac::<MackedResponse, OpenError>(keys, &macked)?;
             Ok(macked.wired())
         }
         Err(message_ack) => Ok(Response::MessageAck(message_ack)),
@@ -762,7 +779,7 @@ mod tests {
             {
                 assert_eq!(
                     seal_payload(&keys(), &secret_key(other_seed), payload.clone()),
-                    Err(PayloadError::SignerIsNotThePayloadSigner)
+                    Err(SealError::SignerIsNotThePayloadSigner)
                 );
             }
         }
@@ -1021,7 +1038,7 @@ mod tests {
         assert_eq!(sealed.len(), SPEC_LARGEST_GOSSIP_PAYLOAD_BYTES);
         assert_eq!(
             seal_payload(&keys(), &secret_key(REPORTED_CARD_SEED), one_past),
-            Err(PayloadError::OverGossipFrame {
+            Err(SealError::OverGossipFrame {
                 bytes: SPEC_LARGEST_GOSSIP_PAYLOAD_BYTES + 1
             })
         );
@@ -1197,7 +1214,7 @@ mod tests {
 
             assert_eq!(
                 open_request(&keys(), &sealed_under_other_network),
-                Err(PayloadError::Crypto(CryptoError::MacMismatch))
+                Err(OpenError::Crypto(CryptoError::MacMismatch))
             );
             for position in 0..sealed.len() {
                 let mut tampered = sealed.clone();
@@ -1222,7 +1239,7 @@ mod tests {
             );
             assert_eq!(
                 open_response(&keys(), &sealed_under_other_network),
-                Err(PayloadError::Crypto(CryptoError::MacMismatch))
+                Err(OpenError::Crypto(CryptoError::MacMismatch))
             );
             for position in 0..sealed.len() {
                 let mut tampered = sealed.clone();
