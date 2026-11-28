@@ -944,6 +944,7 @@ mod tests {
     };
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::net::endpoint::NodeEndpoint;
+    use crate::net::gossip::tests::{flood_received_by, presence_flood_below};
     use crate::node::{Identity, Node, NodeEffects};
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
@@ -2491,6 +2492,11 @@ mod tests {
 
     /// The peer's own Presence, within every rule of the payload layer.
     fn peer_presence() -> Payload {
+        peer_presence_at(PEER_PRESENCE_SEQ)
+    }
+
+    /// The peer's own Presence carrying the seq, within every rule of the payload layer.
+    fn peer_presence_at(seq: u64) -> Payload {
         Payload::Presence(wire::Presence {
             v: Version::CURRENT,
             card: wire::PublicKey::from(secret_key(PEER_SEED).public()),
@@ -2498,7 +2504,7 @@ mod tests {
             public: PEER_PUBLIC.to_vec(),
             attached: true,
             addr: Addr::from_endpoint_report([], []),
-            seq: PEER_PRESENCE_SEQ,
+            seq,
             mac: ZERO_MAC,
             sig: ZERO_SIGNATURE,
         })
@@ -2597,6 +2603,108 @@ mod tests {
                 ]
             ))
         );
+    }
+
+    const TOPIC_FAILED: &str = "gossip.topic_failed";
+    const TOPIC_JOINED: &str = "gossip.topic_joined";
+    const PRESENCE_PAST_THE_FLOOD_SEQ: u64 = FROZEN_CLOCK_MS;
+    const FAILURE_RECORDED_WITHIN: Duration = Duration::from_secs(60);
+    const MARKER_ACCEPTED_AFTER_THE_FAILURE_WITHIN: Duration = Duration::from_secs(30);
+
+    /// The host that `serve_host` starts on the plan's effects, joined to the topic, its loop not yet running.
+    async fn host_with_its_loop_not_running(scratch: &Scratch, report: RunRecord) -> BootstrapNode {
+        let plan = Plan {
+            report,
+            ..Plan::new(HOST_SEED)
+        };
+        let effects = plan.effects(&Seen::default());
+        let domain = parse_relay_domain(DOMAIN).unwrap();
+        let files = read_host_files(
+            &NETWORK.parse().unwrap(),
+            &domain.wire_url,
+            &scratch.directories,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
+            effects.fill_from_secure_source,
+            &mut io::sink(),
+        )
+        .unwrap();
+        let endpoint = (effects.bind_endpoint)(
+            files.key.clone(),
+            files.gate_key(),
+            domain.url,
+            Arc::clone(&effects.monotonic),
+        )
+        .await
+        .unwrap();
+        BootstrapNode::start(
+            files,
+            endpoint,
+            domain.wire_url,
+            effects.clock,
+            effects.monotonic,
+            effects.report,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_host_whose_topic_lagged_records_the_failure_and_goes_on_taking_payloads_with_no_rejoin()
+     {
+        let scratch = Scratch::new("lagged-topic");
+        scratch.configure_network();
+        scratch.certify(HOST_SEED);
+        let (report, mut recorded) = recorded_events();
+        let mut host = host_with_its_loop_not_running(&scratch, report).await;
+        let peer = Peer::joined_through(PEER_SEED, host.endpoint.endpoint()).await;
+        presence_flood_below(FROZEN_CLOCK_MS, async |seq| {
+            peer.topic
+                .broadcast(&secret_key(PEER_SEED), peer_presence_at(seq))
+                .await
+                .unwrap();
+        })
+        .await;
+        flood_received_by(&host.gossip).await;
+        let (stop, stopped) = stopped_on_signal();
+        let filesystem = OperatingSystemFilesystem::of_this_process().unwrap();
+        let marker_fields =
+            received_fields("presence", PEER_SEED, ("seq", PRESENCE_PAST_THE_FLOOD_SEQ));
+
+        let (outcome, (between_the_failure_and_the_marker, accepted_marker)) =
+            tokio::join!(host.serve_until(stopped, &filesystem), async {
+                recorded_until(
+                    &mut recorded,
+                    TOPIC_FAILED,
+                    |_fields| true,
+                    FAILURE_RECORDED_WITHIN,
+                )
+                .await;
+                peer.topic
+                    .broadcast(
+                        &secret_key(PEER_SEED),
+                        peer_presence_at(PRESENCE_PAST_THE_FLOOD_SEQ),
+                    )
+                    .await
+                    .unwrap();
+                let taken = recorded_until(
+                    &mut recorded,
+                    PAYLOAD_ACCEPTED,
+                    |fields| fields == &marker_fields,
+                    MARKER_ACCEPTED_AFTER_THE_FAILURE_WITHIN,
+                )
+                .await;
+                stop.send(()).unwrap();
+                taken
+            });
+        host.stop().await;
+
+        outcome.unwrap();
+        assert_eq!(accepted_marker, marker_fields);
+        let rejoins: Vec<_> = between_the_failure_and_the_marker
+            .iter()
+            .filter(|(name, _fields)| *name == TOPIC_JOINED)
+            .collect();
+        assert!(rejoins.is_empty(), "{rejoins:?}");
     }
 
     #[tokio::test(start_paused = true)]
