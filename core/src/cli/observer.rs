@@ -981,6 +981,7 @@ mod tests {
         counters_snapshot_one_interval_on, deadline_of_the_gossip_join_timeout, field,
         recorded_until_introduce_sent_to, was_taken_at,
     };
+    use crate::net::gossip::tests::{flood_received_by, presence_flood_below};
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
     use crate::peers::{FailedContactKind, PeerTable, Status};
@@ -3482,6 +3483,104 @@ mod tests {
         for (by_member, by_observer) in held {
             assert_eq!(by_member, by_observer);
         }
+        drop(lab);
+    }
+
+    const OBSERVER_JOINED_WITHIN: Duration = Duration::from_secs(10);
+    const OBSERVER_ENDS_WITHIN: Duration = Duration::from_secs(30);
+    const LAGGED_TOPIC_MESSAGE: &str =
+        "the gossip topic failed: the topic dropped this node for reading its events too slowly";
+
+    /// An observation joined through the neighbor, its loop not yet running, whose topic the neighbor has flooded with more Presences than a subscription holds unread.
+    async fn observation_whose_topic_lagged(
+        lab: &Lab,
+        neighbor: &mut SilentNeighbor,
+    ) -> Observation {
+        lab.write_network_config(&[NEIGHBOR_SEED]);
+        let (mut effects, _operator_effects) =
+            lab.effects(vec![neighbor.address.clone()], never_interrupted());
+        effects.monotonic = StandingClock::standing_an_hour_ahead().monotonic();
+        let observation = start_observation(&setup_of(lab), effects).await.unwrap();
+        found_within(
+            OBSERVER_JOINED_WITHIN,
+            "join of the observer reported to the neighbor",
+            async || {
+                matches!(
+                    neighbor.topic.next_event().await,
+                    Some(Ok(GossipEvent::Joined))
+                )
+                .then_some(())
+            },
+        )
+        .await
+        .unwrap_or_else(|missed| missed.fail_the_test());
+        presence_flood_below(wall_clock_ms(), async |seq| {
+            neighbor
+                .topic
+                .broadcast(
+                    &secret_key(NEIGHBOR_SEED),
+                    neighbor_presence_announcing_at(neighbor_address(), seq),
+                )
+                .await
+                .unwrap();
+        })
+        .await;
+        flood_received_by(&observation.gossip).await;
+        observation
+    }
+
+    #[tokio::test]
+    async fn spec_3_13_show_peers_whose_topic_lagged_ends_in_the_topic_failure_with_no_peer_list() {
+        let lab = Lab::new("lagged-show-peers").await;
+        let mut neighbor = start_silent_neighbor().await;
+        let observation = observation_whose_topic_lagged(&lab, &mut neighbor).await;
+
+        let outcome = answered_within(
+            OBSERVER_ENDS_WITHIN,
+            "end of show-peers after its topic lagged",
+            observation.collect_peers(),
+        )
+        .await;
+
+        let Err(failure) = outcome else {
+            panic!("show-peers ended with a peer list after its topic lagged");
+        };
+        assert!(
+            matches!(failure, Failure::Topic(GossipError::Lagged)),
+            "{failure}"
+        );
+        assert_eq!(
+            ObserverCommandError(failure).to_string(),
+            LAGGED_TOPIC_MESSAGE
+        );
+        drop(lab);
+    }
+
+    #[tokio::test]
+    async fn spec_3_13_tail_whose_topic_lagged_ends_in_the_topic_failure() {
+        let lab = Lab::new("lagged-tail").await;
+        let mut neighbor = start_silent_neighbor().await;
+        let observation = observation_whose_topic_lagged(&lab, &mut neighbor).await;
+        let mut tail_output = Vec::new();
+
+        let outcome = answered_within(
+            OBSERVER_ENDS_WITHIN,
+            "end of tail after its topic lagged",
+            observation.tail(&mut tail_output),
+        )
+        .await;
+
+        let Err(failure) = outcome else {
+            panic!("tail ended without failing after its topic lagged");
+        };
+        assert!(
+            matches!(failure, Failure::Topic(GossipError::Lagged)),
+            "{failure}"
+        );
+        assert_eq!(
+            ObserverCommandError(failure).to_string(),
+            LAGGED_TOPIC_MESSAGE
+        );
         drop(lab);
     }
 
