@@ -1,5 +1,6 @@
 use std::fs;
 use std::io;
+use std::path::Path;
 use std::process::Command;
 
 use data_encoding::HEXLOWER;
@@ -20,6 +21,7 @@ use crate::scratch_machine::{BINARY, INVITATION_VARIABLE, KeptFilesPolicy, KeptS
 pub const TASK_RUNNER: &str = "just";
 /// The recipe that runs the binary in the lab owner's directories.
 const OWNER_MACHINE_RECIPE: &str = "remote::estafette";
+const KEPT_CONFIGURATION_NAME: &str = "network.toml";
 /// The variable that recipe takes the binary's path from.
 pub const LAB_BINARY_VARIABLE: &str = "LAB_BINARY";
 /// What a failure says of the invitation variable when it is set to a value that is not unicode, after the variable's name, never the value.
@@ -108,7 +110,9 @@ impl LiveNetwork {
 
     /// The secrets a recipe run for the network with no member prints its failure searched for, read as a server member's are from the configuration the invitation describes and the invitation; or why they could not be read.
     pub fn kept_secrets(&self) -> io::Result<KeptSecrets> {
-        let configuration = toml::to_string(&self.configuration_through(&self.invitation.hosts))
+        let configuration = self
+            .configuration_through(&self.invitation.hosts)
+            .validated_text(Path::new(KEPT_CONFIGURATION_NAME))
             .map_err(io::Error::other)?;
         let invitation = self.kept_files_policy.invitation()?;
         KeptSecrets::of_server_member(&configuration, invitation)

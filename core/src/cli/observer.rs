@@ -17,7 +17,7 @@ use tokio::time::Instant;
 
 use crate::card::CardUnusable;
 use crate::cli::cards::{
-    CardFailure, CardsDirectoryArg, create_card_with_fresh_key, judge_card_text,
+    CardFailure, CardsDirectoryArg, FileTextReader, create_card_with_fresh_key, judge_card_text,
 };
 use crate::cli::debug::DebugArgs;
 use crate::cli::lines::tab_separated_line;
@@ -276,18 +276,14 @@ async fn run_command(
 ) -> Result<(), Failure> {
     match command {
         ObserverCommand::ShowPeers { network, .. } => {
-            let peers = observed_peers(directories, network, effects, |path| {
-                filesystem.read_to_string(path)
-            })
-            .await?;
+            let peers = observed_peers(directories, network, effects, filesystem).await?;
             for peer in &peers {
                 write_line(stdout, &peer_line(peer))?;
             }
             Ok(())
         }
         ObserverCommand::Tail { network, .. } => {
-            let setup =
-                load_network_setup(directories, network, |path| filesystem.read_to_string(path))?;
+            let setup = load_network_setup(directories, network, filesystem)?;
             start_observation(&setup, effects).await?.tail(stdout).await
         }
         ObserverCommand::TestSend {
@@ -296,8 +292,7 @@ async fn run_command(
             body,
             ..
         } => {
-            let setup =
-                load_network_setup(directories, network, |path| filesystem.read_to_string(path))?;
+            let setup = load_network_setup(directories, network, filesystem)?;
             let operator =
                 claim_operator_card(directories, filesystem, pause, network, &effects.fill_seed)?;
             let delivery =
@@ -313,9 +308,9 @@ async fn observed_peers(
     directories: &Directories,
     network: &Handle,
     effects: ObserverEffects,
-    read_text: impl FnOnce(&Path) -> io::Result<String>,
+    filesystem: &(impl FileTextReader + Sync),
 ) -> Result<Vec<Peer>, Failure> {
-    let setup = load_network_setup(directories, network, read_text)?;
+    let setup = load_network_setup(directories, network, filesystem)?;
     start_observation(&setup, effects)
         .await?
         .collect_peers()
@@ -331,9 +326,9 @@ pub async fn count_visible_peers(
     directories: &Directories,
     network: &Handle,
     effects: ObserverEffects,
-    read_text: impl FnOnce(&Path) -> io::Result<String>,
+    filesystem: &(impl FileTextReader + Sync),
 ) -> Result<usize, ObserverCommandError> {
-    observed_peers(directories, network, effects, read_text)
+    observed_peers(directories, network, effects, filesystem)
         .await
         .map(|peers| peers.len())
         .map_err(ObserverCommandError)
@@ -419,7 +414,7 @@ fn claim_operator_card(
         })
         .map_err(Failure::Card)?;
     }
-    let text = filesystem.read_to_string(&card_file).map_err(unreadable)?;
+    let text = filesystem.read_text(&card_file).map_err(unreadable)?;
     let (card, usable) = judge_card_text(&text, &card_file, network).map_err(Failure::Card)?;
     let held =
         claim(&sidecar_file, usable.public_key.as_bytes(), pause).map_err(Failure::Sidecar)?;
@@ -476,10 +471,11 @@ struct NetworkSetup {
 fn load_network_setup(
     directories: &Directories,
     network: &Handle,
-    read_text: impl FnOnce(&Path) -> io::Result<String>,
+    filesystem: &(impl FileTextReader + Sync),
 ) -> Result<NetworkSetup, Failure> {
     let path = directories.network_config_file(network);
-    let config = NetworkConfig::from_read(&path, read_text(&path)).map_err(Failure::Config)?;
+    let config =
+        NetworkConfig::from_read(&path, filesystem.read_text(&path)).map_err(Failure::Config)?;
     let hosts = known_host_addresses(&config).map_err(Failure::Node)?;
     let network = Network::new(config, path).map_err(Failure::Node)?;
     Ok(NetworkSetup { network, hosts })
@@ -999,6 +995,15 @@ mod tests {
     const NETWORK_NAME: &str = "lab";
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];
     const OWNER_SEED: u8 = 60;
+
+    fn setup_of(lab: &Lab) -> NetworkSetup {
+        load_network_setup(
+            &lab.directories,
+            &NETWORK_NAME.parse().unwrap(),
+            operating_system_filesystem(),
+        )
+        .unwrap()
+    }
 
     fn operating_system_filesystem() -> &'static OperatingSystemFilesystem {
         static FILESYSTEM: std::sync::OnceLock<OperatingSystemFilesystem> =
@@ -3040,10 +3045,7 @@ mod tests {
         );
         let observer_clock = StandingClock::standing_an_hour_ahead();
         effects.monotonic = observer_clock.monotonic();
-        let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap(), |path| {
-            fs::read_to_string(path)
-        })
-        .unwrap();
+        let setup = setup_of(&lab);
         let observation = start_observation(&setup, effects).await.unwrap();
         let observer_address = observation.endpoint.endpoint().addr();
         let mut tail_output = Vec::new();
@@ -3146,10 +3148,7 @@ mod tests {
         );
         let observer_clock = StandingClock::standing_an_hour_ahead();
         effects.monotonic = observer_clock.monotonic();
-        let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap(), |path| {
-            fs::read_to_string(path)
-        })
-        .unwrap();
+        let setup = setup_of(&lab);
         let observation = start_observation(&setup, effects).await.unwrap();
         let observer_host = Arc::clone(&observation.host);
         let mut tail_output = Vec::new();
@@ -3401,10 +3400,7 @@ mod tests {
                 .collect(),
             Box::pin(async move { drop(interrupted.await) }),
         );
-        let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap(), |path| {
-            fs::read_to_string(path)
-        })
-        .unwrap();
+        let setup = setup_of(&lab);
         let observation = start_observation(&setup, effects).await.unwrap();
         let observer_host = Arc::clone(&observation.host);
         let neighbor_key = secret_key(NEIGHBOR_SEED);

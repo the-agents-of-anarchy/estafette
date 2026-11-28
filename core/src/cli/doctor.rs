@@ -384,11 +384,7 @@ async fn visible_peer_verdict(
     filesystem: &(impl CardRegistryReader + Sync),
     effects: ObserverEffects,
 ) -> Verdict {
-    match observer::count_visible_peers(directories, network, effects, |path| {
-        filesystem.read_text(path)
-    })
-    .await
-    {
+    match observer::count_visible_peers(directories, network, effects, filesystem).await {
         Ok(0) => Verdict::Failed(String::from("the observer saw no peer")),
         Ok(peers) => Verdict::Passed(format!("peers seen by the observer: {peers}")),
         Err(refusal) => Verdict::Failed(refusal.to_string()),

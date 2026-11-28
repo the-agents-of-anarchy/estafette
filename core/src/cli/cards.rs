@@ -125,8 +125,6 @@ impl fmt::Display for CardFailure {
     }
 }
 
-impl std::error::Error for CardFailure {}
-
 /// A card command that could not run, stated for whoever ran it.
 #[derive(Debug)]
 pub struct CardCommandError(CardFailure);
@@ -140,14 +138,17 @@ impl fmt::Display for CardCommandError {
 impl std::error::Error for CardCommandError {}
 
 /// The reads the card registry listing performs, supplied by the composition root.
-pub trait CardRegistryReader {
+pub trait CardRegistryReader: FileTextReader {
     /// Returns the paths of the entries of a directory.
     ///
     /// # Errors
     ///
     /// Fails when the directory cannot be read; `NotFound` when it does not exist.
     fn read_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>>;
+}
 
+/// The one read of a file as text, which the card registry and the network commands both extend.
+pub trait FileTextReader {
     /// Returns the text of a file.
     ///
     /// # Errors
@@ -156,15 +157,17 @@ pub trait CardRegistryReader {
     fn read_text(&self, path: &Path) -> io::Result<String>;
 }
 
+impl FileTextReader for OperatingSystemFilesystem {
+    fn read_text(&self, path: &Path) -> io::Result<String> {
+        fs::read_to_string(path)
+    }
+}
+
 impl CardRegistryReader for OperatingSystemFilesystem {
     fn read_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
         fs::read_dir(path)?
             .map(|entry| entry.map(|found| found.path()))
             .collect()
-    }
-
-    fn read_text(&self, path: &Path) -> io::Result<String> {
-        fs::read_to_string(path)
     }
 }
 

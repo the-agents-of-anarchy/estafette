@@ -141,15 +141,6 @@ pub struct NetworkConfig {
     pub hosts: Vec<Host>,
 }
 
-impl Serialize for NetworkConfig {
-    fn serialize<Serializer: serde::Serializer>(
-        &self,
-        serializer: Serializer,
-    ) -> Result<Serializer::Ok, Serializer::Error> {
-        WireNetworkConfig::from(self).serialize(serializer)
-    }
-}
-
 impl fmt::Debug for NetworkConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -418,7 +409,7 @@ impl NetworkConfig {
     ///
     /// # Errors
     /// Returns a `ConfigError` when the read failed or the text is not a valid network configuration.
-    pub fn from_read(path: &Path, read: io::Result<String>) -> Result<Self, ConfigError> {
+    pub(crate) fn from_read(path: &Path, read: io::Result<String>) -> Result<Self, ConfigError> {
         parse(path, &read.map_err(read_error(path))?)
     }
 
@@ -427,34 +418,38 @@ impl NetworkConfig {
     /// # Errors
     /// Returns a `ConfigError` when this configuration or the file is malformed, or the file cannot be read or written.
     pub fn rewrite(&self, path: &Path, now_unix_seconds: u64) -> Result<Self, ConfigError> {
-        let (merged, text) = self.merged_text(path, fs::read_to_string(path), now_unix_seconds)?;
-        write_atomically(path, &text).map_err(write_error(path))?;
-        Ok(merged)
+        self.rewritten_through(
+            path,
+            fs::read_to_string(path),
+            write_atomically,
+            now_unix_seconds,
+        )
     }
 
-    /// Merges this configuration with the text a read of the file at `path` returned, a missing file counting as no content, and drops expired learned hosts, returning the result and its file text.
+    /// Merges this configuration with the text a read of the file at `path` returned, a missing file counting as no content, drops expired learned hosts, hands the result's text to `write`, and returns the result.
     ///
     /// # Errors
-    /// Returns a `ConfigError` when this configuration or the text is malformed, or the read failed otherwise than by a missing file.
-    pub(crate) fn merged_text(
+    /// Returns a `ConfigError` when this configuration or the text is malformed, the read failed otherwise than by a missing file, or the write failed.
+    pub(crate) fn rewritten_through(
         &self,
         path: &Path,
         current: io::Result<String>,
+        write: impl FnOnce(&Path, &str) -> io::Result<()>,
         now_unix_seconds: u64,
-    ) -> Result<(Self, String), ConfigError> {
+    ) -> Result<Self, ConfigError> {
         self.validate(path)?;
         let merged = self
             .merged_with(current_configuration(path, current)?)
             .without_expired_hosts(UnixMillis::at_unix_second(now_unix_seconds));
-        let text = merged.rendered()?;
-        Ok((merged, text))
+        write(path, &merged.rendered()?).map_err(write_error(path))?;
+        Ok(merged)
     }
 
     /// Refuses this configuration unless every field is valid, and renders it as the text of the file at `path` with one host entry for each id, sorted by id.
     ///
     /// # Errors
     /// Returns a `ConfigError` when a field is invalid or the configuration cannot be serialized.
-    pub(crate) fn validated_text(&self, path: &Path) -> Result<String, ConfigError> {
+    pub fn validated_text(&self, path: &Path) -> Result<String, ConfigError> {
         self.validate(path)?;
         self.merged_with(None).rendered()
     }
@@ -464,8 +459,7 @@ impl NetworkConfig {
     }
 
     fn validate(&self, path: &Path) -> Result<(), ConfigError> {
-        require_hex_key(path, SECRET_FIELD, &self.secret)?;
-        require_hex_key(path, OWNER_FIELD, &self.owner)?;
+        require_secret_and_owner(path, &self.secret, &self.owner)?;
         for (index_in_hosts, host) in self.hosts.iter().enumerate() {
             host.validate_relay(index_in_hosts, path)?;
         }
@@ -518,8 +512,7 @@ fn parse(path: &Path, text: &str) -> Result<NetworkConfig, ConfigError> {
                 .and_then(|span| position_in(text, span.start)),
             problem: MalformedProblem::of_decoding_message(decoding.message()),
         })?;
-    require_hex_key(path, SECRET_FIELD, &wire_config.secret)?;
-    require_hex_key(path, OWNER_FIELD, &wire_config.owner)?;
+    require_secret_and_owner(path, &wire_config.secret, &wire_config.owner)?;
     let hosts = wire_config
         .hosts
         .into_iter()
@@ -566,6 +559,12 @@ fn lowercase_hex_key_bytes(value: &str) -> Option<[u8; KEY_LEN]> {
     let mut bytes = [0; KEY_LEN];
     (value.len() == HEX_CHARS_PER_KEY && HEXLOWER.decode_mut(value.as_bytes(), &mut bytes).is_ok())
         .then_some(bytes)
+}
+
+/// Refuses a secret and then an owner that is no lowercase hex key, before any host is judged.
+fn require_secret_and_owner(path: &Path, secret: &str, owner: &str) -> Result<(), ConfigError> {
+    require_hex_key(path, SECRET_FIELD, secret)?;
+    require_hex_key(path, OWNER_FIELD, owner)
 }
 
 fn require_hex_key(path: &Path, field: &'static str, value: &str) -> Result<(), ConfigError> {

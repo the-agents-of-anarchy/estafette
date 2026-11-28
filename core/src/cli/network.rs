@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use clap::Subcommand;
 use iroh::PublicKey;
 
+use crate::cli::cards::FileTextReader;
 use crate::config::{
     AcceptedValue, ConfigError, HOST_ID_FIELD, Host, HostOrigin, NetworkConfig, OWNER_FIELD,
     SECRET_FIELD,
@@ -89,20 +90,13 @@ pub enum NetworkCommand {
 }
 
 /// The file operations of the network commands, supplied by the composition root.
-pub trait NetworkFilesystem: DirectoryFilesystem {
+pub trait NetworkFilesystem: DirectoryFilesystem + FileTextReader {
     /// Tells whether a file or directory exists at the path.
     ///
     /// # Errors
     ///
     /// Fails when existence cannot be determined.
     fn path_exists(&self, path: &Path) -> io::Result<bool>;
-
-    /// Reads a whole file as text.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the file is missing, unreadable or not UTF-8.
-    fn read_to_string(&self, path: &Path) -> io::Result<String>;
 
     /// Writes the contents whole to a new file readable by its owner alone, through a temporary file beside it linked into place, refusing a path that exists.
     ///
@@ -131,10 +125,6 @@ impl NetworkFilesystem for OperatingSystemFilesystem {
         path.try_exists()
     }
 
-    fn read_to_string(&self, path: &Path) -> io::Result<String> {
-        fs::read_to_string(path)
-    }
-
     fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
         write_new_file_atomically(path, contents, OWNER_ONLY_FILE_MODE, |temporary| {
             fs::remove_file(temporary)
@@ -159,7 +149,7 @@ pub(crate) fn read_network_config(
     filesystem: &impl NetworkFilesystem,
     path: &Path,
 ) -> Result<NetworkConfig, ConfigError> {
-    NetworkConfig::from_read(path, filesystem.read_to_string(path))
+    NetworkConfig::from_read(path, filesystem.read_text(path))
 }
 
 /// Merges the configuration with the file at `path` read through the filesystem, writes the result whole through it, and returns the result.
@@ -169,15 +159,12 @@ fn rewrite_network_config(
     path: &Path,
     now_unix_seconds: u64,
 ) -> Result<NetworkConfig, ConfigError> {
-    let (merged, text) =
-        config.merged_text(path, filesystem.read_to_string(path), now_unix_seconds)?;
-    filesystem
-        .replace_file(path, &text)
-        .map_err(|source| ConfigError::Write {
-            path: path.to_owned(),
-            source,
-        })?;
-    Ok(merged)
+    config.rewritten_through(
+        path,
+        filesystem.read_text(path),
+        |file, text| filesystem.replace_file(file, text),
+        now_unix_seconds,
+    )
 }
 
 #[derive(Debug)]
@@ -628,7 +615,7 @@ fn certify_host(
     let owner_key_file = directories.owner_key_file(network);
     let owner_key_text =
         filesystem
-            .read_to_string(&owner_key_file)
+            .read_text(&owner_key_file)
             .map_err(|source| match source.kind() {
                 io::ErrorKind::NotFound => Failure::NoOwnerKey {
                     network: network.clone(),

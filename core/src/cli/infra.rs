@@ -511,7 +511,7 @@ fn host_key(
     filesystem: &impl NetworkFilesystem,
     fill_from_secure_source: FillFromSecureSource,
 ) -> Result<SecretKey, Failure> {
-    match filesystem.read_to_string(path) {
+    match filesystem.read_text(path) {
         Ok(text) => parse_secret_key(&text).map_err(|source| Failure::HostKeyUnreadable {
             path: path.to_owned(),
             source,
@@ -564,7 +564,7 @@ fn certifying_certificate(
     host: &iroh::PublicKey,
 ) -> Result<Signature, Failure> {
     let text = filesystem
-        .read_to_string(path)
+        .read_text(path)
         .map_err(|source| match source.kind() {
             io::ErrorKind::NotFound => Failure::CertificateMissing {
                 path: path.to_owned(),
@@ -592,7 +592,7 @@ struct LastRecord {
 impl LastRecord {
     /// Reads the counter from its file, refusing content that is not a decimal integer and one newline.
     fn read(file: PathBuf, filesystem: &impl NetworkFilesystem) -> Result<Self, Failure> {
-        let ts = match filesystem.read_to_string(&file) {
+        let ts = match filesystem.read_text(&file) {
             Ok(text) => text
                 .strip_suffix(LINE_END)
                 .filter(|digits| {

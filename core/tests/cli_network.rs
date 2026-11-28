@@ -13,6 +13,7 @@ mod network_commands {
     use std::process::{Command, Output};
 
     use data_encoding::HEXLOWER;
+    use estafette::cli::cards::FileTextReader;
     use estafette::cli::network::{NetworkCommand, NetworkFilesystem, run};
     use estafette::config::{Host, HostOrigin, NetworkConfig, UnixMillis};
     use estafette::crypto::{NetworkSecret, verify_host_certificate};
@@ -168,13 +169,15 @@ mod network_commands {
         }
     }
 
+    impl FileTextReader for OwnerKeyNameTakenAndTemporaryUnremovable {
+        fn read_text(&self, path: &Path) -> io::Result<String> {
+            self.filesystem.read_text(path)
+        }
+    }
+
     impl NetworkFilesystem for OwnerKeyNameTakenAndTemporaryUnremovable {
         fn path_exists(&self, path: &Path) -> io::Result<bool> {
             self.filesystem.path_exists(path)
-        }
-
-        fn read_to_string(&self, path: &Path) -> io::Result<String> {
-            self.filesystem.read_to_string(path)
         }
 
         fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
@@ -242,13 +245,15 @@ mod network_commands {
         }
     }
 
+    impl FileTextReader for ConfigWriteBlockedAfterOwnerKey {
+        fn read_text(&self, path: &Path) -> io::Result<String> {
+            self.filesystem.read_text(path)
+        }
+    }
+
     impl NetworkFilesystem for ConfigWriteBlockedAfterOwnerKey {
         fn path_exists(&self, path: &Path) -> io::Result<bool> {
             self.filesystem.path_exists(path)
-        }
-
-        fn read_to_string(&self, path: &Path) -> io::Result<String> {
-            self.filesystem.read_to_string(path)
         }
 
         fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
@@ -309,13 +314,15 @@ mod network_commands {
         }
     }
 
+    impl FileTextReader for ExistenceTestMissesTheFile {
+        fn read_text(&self, path: &Path) -> io::Result<String> {
+            self.filesystem.read_text(path)
+        }
+    }
+
     impl NetworkFilesystem for ExistenceTestMissesTheFile {
         fn path_exists(&self, _path: &Path) -> io::Result<bool> {
             Ok(false)
-        }
-
-        fn read_to_string(&self, path: &Path) -> io::Result<String> {
-            self.filesystem.read_to_string(path)
         }
 
         fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {

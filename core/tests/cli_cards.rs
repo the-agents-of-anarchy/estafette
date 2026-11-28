@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use estafette::cli::cards::{
-    CardCommand, CardRegistryReader, CardsDirectoryArg, RegistryArgs, run,
+    CardCommand, CardRegistryReader, CardsDirectoryArg, FileTextReader, RegistryArgs, run,
 };
 use estafette::dirs::{DirectoryFilesystem, OperatingSystemFilesystem};
 use estafette::errors::ExitStatus;
@@ -136,18 +136,20 @@ impl DirectoryFilesystem for CannedRegistry {
     }
 }
 
-impl CardRegistryReader for CannedRegistry {
-    fn read_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
-        if Some(path) == self.card_file.parent() {
-            Ok(vec![self.card_file.clone()])
+impl FileTextReader for CannedRegistry {
+    fn read_text(&self, path: &Path) -> io::Result<String> {
+        if path == self.card_file {
+            Ok(self.card_text.clone())
         } else {
             Err(io::ErrorKind::NotFound.into())
         }
     }
+}
 
-    fn read_text(&self, path: &Path) -> io::Result<String> {
-        if path == self.card_file {
-            Ok(self.card_text.clone())
+impl CardRegistryReader for CannedRegistry {
+    fn read_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        if Some(path) == self.card_file.parent() {
+            Ok(vec![self.card_file.clone()])
         } else {
             Err(io::ErrorKind::NotFound.into())
         }
